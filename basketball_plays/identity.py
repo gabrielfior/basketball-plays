@@ -17,17 +17,21 @@ def normalize_number(text: str | None) -> str | None:
     return str(int(digits))  # strips leading zeros, keeps "0"
 
 
-def resolve_jersey(reads: list[str | None], roster: dict[str, str], min_votes: int = 2) -> str | None:
-    """Plurality vote over OCR reads restricted to numbers that exist on the roster."""
+def jersey_votes(reads: list[str | None], roster: dict[str, str], min_votes: int = 2) -> tuple[str | None, int]:
+    """Plurality vote over OCR reads restricted to numbers on the roster: (jersey, votes)."""
     counts = Counter(n for n in (normalize_number(r) for r in reads) if n is not None and n in roster)
     if not counts:
-        return None
+        return None, 0
     top = counts.most_common(2)
     if top[0][1] < min_votes:
-        return None
+        return None, top[0][1]
     if len(top) > 1 and top[1][1] == top[0][1]:
-        return None
-    return top[0][0]
+        return None, top[0][1]
+    return top[0][0], top[0][1]
+
+
+def resolve_jersey(reads: list[str | None], roster: dict[str, str], min_votes: int = 2) -> str | None:
+    return jersey_votes(reads, roster, min_votes)[0]
 
 
 def _roster_agreement(reads: list[str | None], roster: dict[str, str]) -> int:
@@ -55,3 +59,21 @@ def name_clusters(
     else:
         home_is_0 = cluster_brightness.get(0, 0.0) >= cluster_brightness.get(1, 0.0)
     return {0: home_team, 1: away_team} if home_is_0 else {0: away_team, 1: home_team}
+
+
+def resolve_conflicts(tracks: list[dict]) -> dict[int, str | None]:
+    """Drop duplicate jerseys among concurrent tracks of the same team, keeping the strongest vote.
+
+    Each track dict has: id, team, jersey (may be None), votes, start, end.
+    """
+    keep = {t["id"]: t["jersey"] for t in tracks}
+    ranked = sorted((t for t in tracks if t["jersey"] is not None), key=lambda t: -t["votes"])
+    for i, a in enumerate(ranked):
+        if keep[a["id"]] is None:
+            continue
+        for b in ranked[i + 1:]:
+            if keep[b["id"]] is None or b["team"] != a["team"] or b["jersey"] != a["jersey"]:
+                continue
+            if b["start"] <= a["end"] and a["start"] <= b["end"]:
+                keep[b["id"]] = None
+    return keep

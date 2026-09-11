@@ -22,7 +22,7 @@ def test_stitch_respects_team_and_distance():
     a = track(1, range(20), np.linspace(10, 20, 20), cluster=0)
     far = track(2, range(22, 40), np.linspace(60, 70, 18), cluster=0)
     other_team = track(3, range(22, 40), np.linspace(21, 30, 18), cluster=1)
-    merged = stitch.stitch_tracks([a, far, other_team], fps=10)
+    merged = stitch.stitch_tracks([a, far, other_team], fps=10, short_track_s=0)
     assert sorted(m.track_id for m in merged) == [1, 2, 3]
 
 

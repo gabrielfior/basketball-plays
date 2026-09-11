@@ -117,8 +117,8 @@ def build_possessions(
     min_duration: float = 3.0,
     min_flip_duration: float = 1.5,
     max_gap: float = 3.0,
-    min_track_seconds: float = 1.0,
-    stitch_gap_s: float = 1.5,
+    min_track_seconds: float = 1.5,
+    stitch_gap_s: float = 2.5,
     stitch_dist_ft: float = 6.0,
 ) -> list[Possession]:
     frames = sorted(frames, key=lambda f: f.t)
@@ -157,6 +157,7 @@ def build_possessions(
             raw = stitch_tracks(raw, fps, max_gap_s=stitch_gap_s, max_dist_ft=stitch_dist_ft)
 
         players: list[PlayerTrack] = []
+        candidates: list[dict] = []
         for tr in raw:
             if len(tr.frames) < max(2, int(min_track_seconds * fps)):
                 continue
@@ -166,15 +167,21 @@ def build_possessions(
             a, b = tr.frames[0], tr.frames[-1]
             team = names.get(tr.cluster) if tr.cluster is not None else None
             member_reads = [r for m in tr.members for r in reads.get(m, [])]
-            jersey = identity.resolve_jersey(member_reads, ROSTERS.get(team, {})) if team else None
+            jersey, votes = identity.jersey_votes(member_reads, ROSTERS.get(team, {})) if team else (None, 0)
+            candidates.append({"id": tr.track_id, "team": team, "jersey": jersey, "votes": votes,
+                               "start": float(times[a]), "end": float(times[b])})
             players.append(PlayerTrack(
-                track_id=tr.track_id, team=team, jersey=jersey,
-                name=player_name(team, jersey) if team else None,
+                track_id=tr.track_id, team=team, jersey=jersey, name=None,
                 trajectory=[[round(float(times[k]), 3), round(float(cleaned[k, 0]), 2),
                              round(float(cleaned[k, 1]), 2)] for k in range(a, b + 1)],
                 boxes=[[round(float(times[k]), 3)] + [round(float(v), 1) for v in box]
                        for k, box in zip(tr.frames, tr.boxes)],
             ))
+
+        resolved = identity.resolve_conflicts(candidates)
+        for pl in players:
+            pl.jersey = resolved.get(pl.track_id)
+            pl.name = player_name(pl.team, pl.jersey) if pl.team else None
 
         ball_out: list[list[float]] = []
         if len(ball_t) >= 2:

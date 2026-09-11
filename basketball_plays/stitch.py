@@ -35,16 +35,20 @@ class RawTrack:
         return (pts[-1] - pts[0]) / (len(pts) - 1)
 
 
-def _compatible(a: RawTrack, b: RawTrack) -> bool:
-    return a.cluster is None or b.cluster is None or a.cluster == b.cluster
+def _compatible(a: RawTrack, b: RawTrack, short_frames: int) -> bool:
+    """Team clusters must agree, unless one track is too short for its cluster vote to be trusted."""
+    if a.cluster is None or b.cluster is None or a.cluster == b.cluster:
+        return True
+    return len(a.frames) < short_frames or len(b.frames) < short_frames
 
 
 def stitch_tracks(
     tracks: list[RawTrack],
     fps: float,
-    max_gap_s: float = 1.5,
+    max_gap_s: float = 2.5,
     max_dist_ft: float = 6.0,
     same_frame_dist_ft: float = 3.0,
+    short_track_s: float = 2.0,
 ) -> list[RawTrack]:
     """Greedily link a track that ends to the nearest track that starts shortly after it.
 
@@ -54,6 +58,7 @@ def stitch_tracks(
     """
     tracks = sorted(tracks, key=lambda t: t.start)
     max_gap = int(round(max_gap_s * fps))
+    short_frames = int(round(short_track_s * fps))
     consumed: set[int] = set()
     by_id = {t.track_id: t for t in tracks}
     order = [t.track_id for t in tracks]
@@ -68,7 +73,7 @@ def stitch_tracks(
                 if cand.track_id in consumed or cand.track_id == head.track_id:
                     continue
                 gap = cand.start - head.end
-                if gap < 0 or gap > max_gap or not _compatible(head, cand):
+                if gap < 0 or gap > max_gap or not _compatible(head, cand, short_frames):
                     continue
                 predicted = np.array(head.xy[-1]) + head.velocity() * gap
                 d = float(np.linalg.norm(np.array(cand.xy[0]) - predicted))

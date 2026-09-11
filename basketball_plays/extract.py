@@ -92,6 +92,22 @@ def track_reads(frames: list[FrameRecord]) -> dict[int, list[str]]:
     return reads
 
 
+def attach_holding(players: list[PlayerTrack], frames: list[FrameRecord]) -> None:
+    """Fill PlayerTrack.holding with the times the detector flagged the track's box as
+    player-in-possession. Boxes are matched on (time, rounded bbox) because stitching renames
+    track ids."""
+    holders: set[tuple[float, tuple[float, ...]]] = set()
+    for fr in frames:
+        for d in fr.detections:
+            if d.cls == CLS_PLAYER_IN_POSSESSION:
+                holders.add((round(fr.t, 3), tuple(round(float(v), 1) for v in d.bbox)))
+    for p in players:
+        p.holding = sorted(
+            round(float(row[0]), 3) for row in p.boxes
+            if (round(float(row[0]), 3), tuple(round(float(v), 1) for v in row[1:5])) in holders
+        )
+
+
 def resolve_team_names(
     projected: list[ProjectedFrame], frames: list[FrameRecord], cluster_brightness: dict[int, float],
     team_map: dict[int, str] | None = None,
@@ -184,6 +200,7 @@ def build_possessions(
         for pl in players:
             pl.jersey = resolved.get(pl.track_id)
             pl.name = player_name(pl.team, pl.jersey) if pl.team else None
+        attach_holding(players, [frames[i] for i in idx])
 
         ball_out: list[list[float]] = []
         if len(ball_t) >= 2:

@@ -63,6 +63,7 @@ class PlayerTrack:
     name: str | None
     trajectory: list[list[float]]  # [t, x, y] in court feet
     boxes: list[list[float]]  # [t, x1, y1, x2, y2] in pixels
+    holding: list[float] = field(default_factory=list)  # video times when this track had the ball
 
 
 @dataclass

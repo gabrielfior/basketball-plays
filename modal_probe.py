@@ -45,10 +45,21 @@ def probe():
     ocr = get_model(model_id="basketball-jersey-numbers-ocr/3")
     out["ocr"] = {"type": type(ocr).__name__, "load_s": round(time.time() - t0, 1)}
     crop = (np.random.rand(224, 224, 3) * 255).astype("uint8")
+    import inspect
+    out["ocr"]["predict_sig"] = str(inspect.signature(ocr.predict))
+    out["ocr"]["infer_sig"] = str(inspect.signature(ocr.infer)) if hasattr(ocr, "infer") else None
+    out["ocr"]["methods"] = [m for m in dir(ocr) if not m.startswith("_")][:40]
     t0 = time.time()
-    res = ocr.predict(crop, "Read the number.")
+    try:
+        res = ocr.predict(crop, prompt="Read the number.")
+    except Exception as e:  # noqa: BLE001
+        res = f"ERR {e!r}"
+        try:
+            res = ("infer", ocr.infer(crop, prompt="Read the number."))
+        except Exception as e2:  # noqa: BLE001
+            res = res + f" / infer ERR {e2!r}"
     out["ocr"]["latency_ms"] = round((time.time() - t0) * 1000, 1)
-    out["ocr"]["sample"] = str(res)[:200]
+    out["ocr"]["sample"] = str(res)[:400]
     return out
 
 

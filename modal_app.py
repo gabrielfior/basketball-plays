@@ -194,7 +194,7 @@ def process_chunk(chunk_id: int, start_s: float, end_s: float, fps: float, ocr_e
                     if x2 - x1 < 4 or y2 - y1 < 4:
                         continue
                     try:
-                        text = ocr_model.predict(frame[y1:y2, x1:x2], OCR_PROMPT)[0]
+                        text = ocr_model.infer(frame[y1:y2, x1:x2], prompt=OCR_PROMPT)[0].response
                     except Exception:  # noqa: BLE001 - OCR failures are non-fatal
                         continue
                     numbers.append({"track_id": dets[owner].track_id, "text": str(text).strip()})

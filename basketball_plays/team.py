@@ -86,7 +86,7 @@ class TeamClassifier:
         with open(path, "wb") as f:
             pickle.dump({"reducer": self.reducer, "kmeans": self.kmeans, "brightness": self.brightness}, f)
 
-    def load(self, path: str | Path) -> "TeamClassifier":
+    def load(self, path: str | Path) -> TeamClassifier:
         with open(path, "rb") as f:
             d = pickle.load(f)
         self.reducer, self.kmeans, self.brightness = d["reducer"], d["kmeans"], d["brightness"]

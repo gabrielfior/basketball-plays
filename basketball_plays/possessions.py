@@ -55,9 +55,8 @@ def _debounce(labels: list[int], min_run: int) -> list[int]:
             prev_lab = runs[k - 1][0] if k > 0 else None
             next_lab = runs[k + 1][0] if k + 1 < len(runs) else None
             target = None
-            if prev_lab is not None and next_lab is not None and prev_lab == next_lab:
-                target = prev_lab
-            elif prev_lab is not None and next_lab is None:
+            surrounded = prev_lab is not None and next_lab is not None and prev_lab == next_lab
+            if surrounded or (prev_lab is not None and next_lab is None):
                 target = prev_lab
             elif prev_lab is None and next_lab is not None:
                 target = next_lab

@@ -40,7 +40,20 @@ image = (
 )
 app = modal.App("basketball-plays", image=image)
 vol = modal.Volume.from_name("basketball-plays", create_if_missing=True)
+
+
+def _hf_token() -> str | None:
+    """Hugging Face token from the environment or the local HF cache (used for SigLIP downloads)."""
+    tok = os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")
+    if tok:
+        return tok
+    cached = Path.home() / ".cache" / "huggingface" / "token"
+    return cached.read_text().strip() if cached.exists() else None
+
+
 secrets = [modal.Secret.from_dotenv()]
+if _hf_token():
+    secrets.append(modal.Secret.from_dict({"HF_TOKEN": _hf_token()}))
 
 
 def _read_frames_ffmpeg(path: str, start_s: float, duration_s: float, fps: float, size: tuple[int, int]):

@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Iterator
 
 # class ids of basketball-player-detection-3-ycjdo/4
 CLS_BALL = 0
@@ -47,7 +47,7 @@ class FrameRecord:
         return json.dumps(asdict(self), separators=(",", ":"))
 
     @classmethod
-    def from_dict(cls, d: dict) -> "FrameRecord":
+    def from_dict(cls, d: dict) -> FrameRecord:
         dets = [Detection(**x) for x in d.get("detections", [])]
         return cls(
             frame_idx=d["frame_idx"], t=d["t"], keypoints=d["keypoints"], detections=dets,
@@ -80,7 +80,7 @@ class Possession:
         return json.dumps(asdict(self), separators=(",", ":"))
 
     @classmethod
-    def from_dict(cls, d: dict) -> "Possession":
+    def from_dict(cls, d: dict) -> Possession:
         players = [PlayerTrack(**p) for p in d["players"]]
         return cls(**{**d, "players": players})
 
@@ -104,5 +104,4 @@ def read_possessions(path: str | Path) -> list[Possession]:
 def write_jsonl(path: str | Path, records) -> None:
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w") as f:
-        for r in records:
-            f.write(r.to_json() + "\n")
+        f.writelines(r.to_json() + "\n" for r in records)

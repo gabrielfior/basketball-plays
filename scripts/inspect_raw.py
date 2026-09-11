@@ -13,8 +13,8 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from basketball_plays.extract import project_frame  # noqa: E402
-from basketball_plays.schema import PLAYER_CLASSES, read_frames  # noqa: E402
+from basketball_plays.extract import project_frame
+from basketball_plays.schema import PLAYER_CLASSES, read_frames
 
 
 def main() -> None:

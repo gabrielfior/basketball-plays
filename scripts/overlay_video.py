@@ -14,10 +14,15 @@ from tqdm import tqdm
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from basketball_plays.court import NCAA, draw_court  # noqa: E402
-from basketball_plays.render import VideoWriter, box_lookup, draw_overlay, render_court_frame  # noqa: E402
-from basketball_plays.schema import read_possessions  # noqa: E402
-from basketball_plays.video import probe  # noqa: E402
+from basketball_plays.court import NCAA, draw_court
+from basketball_plays.render import (
+    VideoWriter,
+    box_lookup,
+    draw_overlay,
+    render_court_frame,
+)
+from basketball_plays.schema import read_possessions
+from basketball_plays.video import probe
 
 
 def main() -> None:

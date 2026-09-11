@@ -18,6 +18,7 @@ from basketball_plays.schema import (
     PlayerTrack,
     Possession,
 )
+from basketball_plays.stitch import RawTrack, stitch_tracks
 
 
 @dataclass
@@ -117,6 +118,8 @@ def build_possessions(
     min_flip_duration: float = 1.5,
     max_gap: float = 3.0,
     min_track_seconds: float = 1.0,
+    stitch_gap_s: float = 1.5,
+    stitch_dist_ft: float = 6.0,
 ) -> list[Possession]:
     frames = sorted(frames, key=lambda f: f.t)
     projected = [project_frame(f) for f in frames]
@@ -145,23 +148,32 @@ def build_possessions(
                 ball_t.append(k)
                 ball_xy.append(pf.ball_xy)
 
+        raw = [
+            RawTrack(track_id=tid, frames=rec["t"], xy=[tuple(v) for v in rec["xy"]], boxes=rec["box"],
+                     cluster=clusters.get(tid))
+            for tid, rec in sorted(per_track.items())
+        ]
+        if stitch_gap_s > 0:
+            raw = stitch_tracks(raw, fps, max_gap_s=stitch_gap_s, max_dist_ft=stitch_dist_ft)
+
         players: list[PlayerTrack] = []
-        for tid, rec in sorted(per_track.items()):
-            if len(rec["t"]) < max(2, int(min_track_seconds * fps)):
+        for tr in raw:
+            if len(tr.frames) < max(2, int(min_track_seconds * fps)):
                 continue
             full = np.full((len(idx), 2), np.nan)
-            full[rec["t"]] = np.array(rec["xy"])
+            full[tr.frames] = np.array(tr.xy)
             cleaned = paths.clean_path(full)
-            a, b = rec["t"][0], rec["t"][-1]
-            cluster = clusters.get(tid)
-            team = names.get(cluster) if cluster is not None else None
-            jersey = identity.resolve_jersey(reads.get(tid, []), ROSTERS.get(team, {})) if team else None
+            a, b = tr.frames[0], tr.frames[-1]
+            team = names.get(tr.cluster) if tr.cluster is not None else None
+            member_reads = [r for m in tr.members for r in reads.get(m, [])]
+            jersey = identity.resolve_jersey(member_reads, ROSTERS.get(team, {})) if team else None
             players.append(PlayerTrack(
-                track_id=tid, team=team, jersey=jersey, name=player_name(team, jersey) if team else None,
+                track_id=tr.track_id, team=team, jersey=jersey,
+                name=player_name(team, jersey) if team else None,
                 trajectory=[[round(float(times[k]), 3), round(float(cleaned[k, 0]), 2),
                              round(float(cleaned[k, 1]), 2)] for k in range(a, b + 1)],
                 boxes=[[round(float(times[k]), 3)] + [round(float(v), 1) for v in box]
-                       for k, box in zip(rec["t"], rec["box"])],
+                       for k, box in zip(tr.frames, tr.boxes)],
             ))
 
         ball_out: list[list[float]] = []

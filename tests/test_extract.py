@@ -117,3 +117,27 @@ def test_referees_and_numbers_are_not_players():
     poss = extract.build_possessions(frames, fps=FPS, cluster_brightness={0: 220.0, 1: 90.0})
     assert len(poss) == 1
     assert {p.track_id for p in poss[0].players} == set(range(1, 11))
+
+
+def test_fragmented_track_is_stitched_and_reads_are_pooled():
+    frames = make_frames(n_left=60, n_right=0)
+    # from frame 30 on, track 1 gets a new tracker id (1001), then a short gap of 3 frames
+    for fr in frames[30:33]:
+        fr.detections = [d for d in fr.detections if d.track_id != 1]
+        fr.numbers = [n for n in fr.numbers if n["track_id"] != 1]
+    for fr in frames[33:]:
+        for d in fr.detections:
+            if d.track_id == 1:
+                d.track_id = 1001
+        for n in fr.numbers:
+            if n["track_id"] == 1:
+                n["track_id"] = 1001
+    poss = extract.build_possessions(frames, fps=FPS, cluster_brightness={0: 220.0, 1: 90.0})
+    ids = {p.track_id for p in poss[0].players}
+    assert 1 in ids and 1001 not in ids and len(ids) == 10
+    p1 = next(p for p in poss[0].players if p.track_id == 1)
+    assert len(p1.boxes) == 57 and len(p1.trajectory) == 60
+    assert p1.jersey == "12"
+    # without stitching the fragment survives as its own player
+    poss = extract.build_possessions(frames, fps=FPS, cluster_brightness={0: 220.0, 1: 90.0}, stitch_gap_s=0)
+    assert 1001 in {p.track_id for p in poss[0].players}

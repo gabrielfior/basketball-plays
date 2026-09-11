@@ -21,9 +21,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from basketball_plays.extract import build_possessions  # noqa: E402
-from basketball_plays.rosters import DUKE, MICHIGAN  # noqa: E402
-from basketball_plays.schema import read_frames, write_jsonl  # noqa: E402
+from basketball_plays.extract import build_possessions
+from basketball_plays.rosters import DUKE, MICHIGAN
+from basketball_plays.schema import read_frames, write_jsonl
 
 
 def run_gpu_stage(video: str, start: float, end: float, fps: float, raw_dir: str, skip_upload: bool) -> None:

@@ -3,7 +3,8 @@ import modal
 
 image = (
     modal.Image.from_registry("nvidia/cuda:12.4.1-devel-ubuntu22.04", add_python="3.11")
-    .apt_install("libgl1", "libglib2.0-0", "ffmpeg", "git", "build-essential")
+    .apt_install("libgl1", "libglib2.0-0", "ffmpeg", "git", "build-essential", "clang")
+    .env({"CC": "gcc", "CXX": "g++"})
     .pip_install("inference-gpu[transformers]>=0.50", "supervision>=0.25", "numpy<2.3")
     .env({"ONNXRUNTIME_EXECUTION_PROVIDERS": "[CUDAExecutionProvider]"})
 )

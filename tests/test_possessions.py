@@ -46,7 +46,7 @@ def test_short_invalid_gap_is_bridged_long_gap_splits():
     fs = frames([-1] * 60 + [0] * 10 + [-1] * 60)
     assert len(P.segment(fs, fps=10, min_duration=3.0, max_gap=3.0)) == 1
     fs = frames([-1] * 60 + [0] * 50 + [-1] * 60)
-    segs = P.segment(fs, fps=10, min_duration=3.0, max_gap=3.0)
+    segs = P.segment(fs, fps=10, min_duration=3.0, max_gap=3.0, merge_same_half_gap=0)
     assert len(segs) == 2
     # invalid frames are not part of either possession
     assert all(fs[i].valid for s in segs for i in s.frame_indices)
@@ -56,6 +56,16 @@ def test_too_short_runs_are_dropped():
     fs = frames([-1] * 20 + [0] * 50 + [1] * 60)
     segs = P.segment(fs, fps=10, min_duration=3.0)
     assert [s.half for s in segs] == [1]
+
+
+def test_same_half_runs_across_a_replay_gap_are_merged():
+    fs = frames([-1] * 60 + [0] * 80 + [-1] * 60)  # 8 s of replay in the middle
+    segs = P.segment(fs, fps=10, min_duration=3.0, max_gap=3.0, merge_same_half_gap=12.0)
+    assert len(segs) == 1 and len(segs[0].frame_indices) == 120
+    fs = frames([-1] * 60 + [0] * 150 + [-1] * 60)  # 15 s gap: too long to trust
+    assert len(P.segment(fs, fps=10, min_duration=3.0, max_gap=3.0, merge_same_half_gap=12.0)) == 2
+    fs = frames([-1] * 60 + [0] * 80 + [1] * 60)  # different half: never merged
+    assert len(P.segment(fs, fps=10, min_duration=3.0, merge_same_half_gap=12.0)) == 2
 
 
 def test_offense_map_from_possession_detections():

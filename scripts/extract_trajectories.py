@@ -50,7 +50,9 @@ def main() -> None:
                     help="force which appearance cluster is Duke")
     ap.add_argument("--min-players", type=int, default=6)
     ap.add_argument("--min-duration", type=float, default=3.0)
-    ap.add_argument("--max-gap", type=float, default=3.0)
+    ap.add_argument("--max-gap", type=float, default=3.0, help="invalid-view gap that ends a possession")
+    ap.add_argument("--merge-gap", type=float, default=12.0,
+                    help="rejoin same-half runs separated by at most this many seconds (replays)")
     args = ap.parse_args()
 
     if not args.skip_gpu:
@@ -73,7 +75,7 @@ def main() -> None:
     fps = float(meta.get("fps", args.fps))
     possessions = build_possessions(frames, fps=fps, cluster_brightness=brightness, team_map=team_map,
                                     min_players=args.min_players, min_duration=args.min_duration,
-                                    max_gap=args.max_gap)
+                                    max_gap=args.max_gap, merge_same_half_gap=args.merge_gap)
     write_jsonl(args.out, possessions)
     total = sum(p.end_time - p.start_time for p in possessions)
     print(f"{len(frames)} frames -> {len(possessions)} possessions ({total:.0f}s of play) -> {args.out}")

@@ -117,6 +117,7 @@ def build_possessions(
     min_duration: float = 3.0,
     min_flip_duration: float = 1.5,
     max_gap: float = 3.0,
+    merge_same_half_gap: float = 12.0,
     min_track_seconds: float = 1.5,
     stitch_gap_s: float = 2.5,
     stitch_dist_ft: float = 6.0,
@@ -125,7 +126,8 @@ def build_possessions(
     projected = [project_frame(f) for f in frames]
     states = build_states(frames, projected, min_players=min_players)
     segments = possessions.segment(states, fps, min_duration=min_duration,
-                                   min_flip_duration=min_flip_duration, max_gap=max_gap)
+                                   min_flip_duration=min_flip_duration, max_gap=max_gap,
+                                   merge_same_half_gap=merge_same_half_gap)
     offense_map = possessions.learn_offense_map(offense_votes(projected, states))
     names = resolve_team_names(projected, frames, cluster_brightness or {}, team_map)
     clusters = track_clusters(projected)

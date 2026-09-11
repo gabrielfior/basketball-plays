@@ -73,12 +73,15 @@ def segment(
     min_duration: float = 3.0,
     min_flip_duration: float = 1.5,
     max_gap: float = 3.0,
+    merge_same_half_gap: float = 12.0,
 ) -> list[Segment]:
     """Split valid frames into possessions.
 
     A possession is a maximal run of valid frames on the same half. Half flips shorter than
     `min_flip_duration` are treated as noise. Invalid stretches up to `max_gap` seconds are
-    bridged (their frames are excluded); longer ones end the possession. Runs shorter than
+    bridged (their frames are excluded); longer ones end the possession, except that two
+    consecutive runs on the same half separated by at most `merge_same_half_gap` seconds (a
+    replay or close-up in the middle of a possession) are joined. Runs shorter than
     `min_duration` are dropped.
     """
     valid_pos = [i for i, s in enumerate(states) if s.valid and s.action_half is not None]
@@ -98,7 +101,15 @@ def segment(
         else:
             cur.append(i)
     segments.append(Segment(cur, cur_half))
-    return [s for s in segments if s.duration(states, fps) >= min_duration]
+    merged: list[Segment] = []
+    for seg in segments:
+        if merged and merged[-1].half == seg.half:
+            gap = states[seg.frame_indices[0]].t - states[merged[-1].frame_indices[-1]].t
+            if gap <= merge_same_half_gap:
+                merged[-1].frame_indices += seg.frame_indices
+                continue
+        merged.append(seg)
+    return [s for s in merged if s.duration(states, fps) >= min_duration]
 
 
 def learn_offense_map(votes: list[tuple[int, int]]) -> dict[int, int]:

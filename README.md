@@ -69,6 +69,35 @@ One JSON object per possession:
   voting, teleport removal and smoothing.
 - Design notes: `docs/superpowers/specs/2026-09-10-basketball-plays-design.md`.
 
+## Results on the first half (video 0:00 to 35:35)
+
+`data/trajectories.jsonl` is committed. The GPU stage ran on 8 Modal L4 containers in about
+20 minutes wall-clock (roughly $3 of compute including a smoke test); the local stage takes
+under a minute and can be re-run with `--skip-gpu` after changing thresholds.
+
+| Metric | Value |
+|---|---|
+| Sampled frames | 21,350 at 10 fps |
+| Frames with a court homography | 74.5% |
+| Frames with 6+ players on court (game view) | 59.6% |
+| Possessions | 80 (1,411 s of play) |
+| Player tracks | 1,291, median 6.8 s, 602 with a jersey number and name |
+| Team clustering | cluster 0 = Michigan, cluster 1 = Duke, confirmed by OCR reads |
+
+Known limitations, in order of impact:
+
+- Tracker id switches still fragment players: a typical possession lists 12 to 26 tracks for
+  10 players. Stitching links fragments across gaps under 2.5 s and same-frame handoffs; a
+  player who is occluded longer, or who is re-acquired with the wrong team cluster, gets a new
+  id. Jersey names are the reliable identity key across fragments.
+- Possessions are segmented from the half the players occupy, joined across replays up to 12 s.
+  Free-throw sequences merge into the surrounding possession, and a long replay can split one.
+  ESPN's play-by-play implies about 58 possessions for the half versus 80 detected.
+- The ball position is a ground projection of an airborne object and is missing in about half
+  of the frames.
+- Jersey OCR at 720p misreads similar digits (2 vs 21, 3 vs 23); a number needs two agreeing
+  reads on the team's roster, and concurrent duplicates on one team keep only the stronger vote.
+
 ## Tests
 
 ```bash

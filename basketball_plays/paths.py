@@ -73,6 +73,9 @@ def clean_path(
                 re = min(T - 1, end + pad_around_runs)
                 remove[rs : re + 1] = True
             i = max(j, i + 1)
+    # never throw away most of a track: if the "teleports" are the whole track, keep it as is
+    if remove.any() and (valid & ~remove).sum() < max(2, int(0.5 * valid.sum())):
+        remove[:] = False
     xy[remove] = np.nan
     out = np.stack([interpolate_nan(xy[:, 0]), interpolate_nan(xy[:, 1])], axis=1)
     for d in range(2):

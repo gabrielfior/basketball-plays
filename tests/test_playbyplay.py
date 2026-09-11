@@ -91,3 +91,18 @@ def test_assign_events_gap_after_possession_goes_to_matching_team():
     # possessions without a clock window never receive events
     got = pbp.assign_events([(1, None, None, "Duke")], events)
     assert got == {1: []}
+
+
+def test_match_player_and_locate_events():
+    from basketball_plays.rosters import ROSTERS
+    from basketball_plays.scoreboard import ScoreboardRead
+
+    assert pbp.match_player("Morez Johnson Jr. makes layup", ROSTERS) == ("Michigan", "Morez Johnson Jr.")
+    assert pbp.match_player("Official TV Timeout", ROSTERS) == (None, None)
+    events = pbp.parse_events([ev("19:30", "a"), ev("19:25", "b"), ev("19:00", "c")])
+    reads = [ScoreboardRead(t=float(k), clock=1180 - k, clock_text=None, away=0, home=0) for k in range(20)]
+    # possession runs video 0..20 s, clock 19:40 (1180) -> 19:20 (1160)
+    ts = pbp.locate_events(events, reads, 0.0, 20.0, 1180.0, 1160.0)
+    assert ts[0] == 10.0  # read at t=10 shows 1170 = 19:30
+    assert ts[1] == 15.0
+    assert ts[2] == 20.0  # outside the window: clamped to the end

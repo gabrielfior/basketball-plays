@@ -30,3 +30,12 @@ def test_clean_path_all_nan_stays_nan():
 def test_interpolate_nan_edges_are_held():
     y = np.array([np.nan, 1.0, np.nan, 3.0, np.nan])
     assert paths.interpolate_nan(y).tolist() == [1.0, 1.0, 2.0, 3.0, 3.0]
+
+
+def test_clean_path_keeps_erratic_track_instead_of_erasing_it():
+    rng = np.random.default_rng(0)
+    xy = np.full((40, 2), np.nan)
+    obs = np.arange(0, 40, 3)
+    xy[obs] = rng.uniform(0, 94, (len(obs), 2))  # jumps everywhere: nothing to interpolate from
+    out = paths.clean_path(xy)
+    assert not np.isnan(out).any()

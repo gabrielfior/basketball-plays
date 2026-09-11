@@ -17,6 +17,10 @@ BALL_BGR = (0, 110, 255)
 TEXT_BGR = (30, 30, 30)
 
 
+def finite(row) -> bool:
+    return all(np.isfinite(v) for v in row)
+
+
 def team_color(team: str | None) -> tuple[int, int, int]:
     return TEAM_BGR.get(team, TEAM_BGR[None])
 
@@ -53,13 +57,79 @@ def possession_times(pos: Possession) -> list[float]:
     return [round(pos.start_time + k / pos.fps, 3) for k in range(n)]
 
 
+EVENT_HOLD_S = 3.0
+GREEN, RED, AMBER, ORANGE, GREY = (60, 170, 60), (40, 40, 220), (0, 200, 255), (0, 120, 255), (120, 120, 120)
+
+
+def event_style(e: dict) -> tuple[str, tuple[int, int, int]] | None:
+    """(tag, colour) for an event banner; None for events not worth showing (substitutions)."""
+    text = e.get("text", "").lower()
+    etype = e.get("type", "").lower()
+    if "subbing" in text or "substitution" in etype:
+        return None
+    if "free throw" in text:
+        return ("FT MADE", GREEN) if " makes " in text else ("FT MISSED", RED)
+    if " makes " in text:
+        return (f"MADE +{e.get('score_value') or (3 if 'three point' in text else 2)}", GREEN)
+    if " misses " in text:
+        return ("MISSED 3" if "three point" in text else "MISSED 2", RED)
+    if "turnover" in text or "turnover" in etype:
+        return ("TURNOVER", ORANGE)
+    if "steal" in etype or "steal" in text:
+        return ("STEAL", ORANGE)
+    if "block" in etype:
+        return ("BLOCK", ORANGE)
+    if "foul" in etype or "foul" in text:
+        return ("FOUL", AMBER)
+    if "rebound" in etype:
+        return ("OFF REB" if "offensive" in etype else "DEF REB", GREY)
+    if "timeout" in etype:
+        return ("TIMEOUT", GREY)
+    return (e.get("type", "EVENT").upper(), GREY)
+
+
+def active_events(pos: Possession, t: float, hold: float = EVENT_HOLD_S) -> list[dict]:
+    """Events whose video time has passed within the last `hold` seconds, latest first."""
+    evs = [e for e in (pos.events or []) if e.get("t") is not None and e["t"] <= t + 1e-6 < e["t"] + hold]
+    return sorted(evs, key=lambda e: -e["t"])
+
+
+def draw_banner(img: np.ndarray, x: int, y: int, tag: str, text: str, color, scale: float = 0.5) -> int:
+    """Draw a coloured tag box followed by the event text; returns the banner height."""
+    (tw, th), _ = cv2.getTextSize(tag, cv2.FONT_HERSHEY_SIMPLEX, scale, 2)
+    (ew, eh), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, scale, 1)
+    h = max(th, eh) + 12
+    cv2.rectangle(img, (x, y), (x + tw + 12, y + h), color, -1)
+    cv2.rectangle(img, (x + tw + 12, y), (x + tw + 12 + ew + 12, y + h), (250, 250, 250), -1)
+    cv2.putText(img, tag, (x + 6, y + h - 7), cv2.FONT_HERSHEY_SIMPLEX, scale, (255, 255, 255), 2, cv2.LINE_AA)
+    cv2.putText(img, text, (x + tw + 18, y + h - 7), cv2.FONT_HERSHEY_SIMPLEX, scale, TEXT_BGR, 1, cv2.LINE_AA)
+    return h
+
+
+def player_for_event(pos: Possession, e: dict):
+    name = e.get("player")
+    if not name:
+        return None
+    for p in pos.players:
+        if p.name == name:
+            return p
+    return None
+
+
+def position_at(p, t: float):
+    for row in p.trajectory:
+        if abs(row[0] - t) < 0.051 and finite(row):
+            return row[1], row[2]
+    return None
+
+
 def render_court_frame(
     pos: Possession, t: float, scale: float = 10.0, padding: int = 30, trail_seconds: float = 2.0,
     header: int = 44, court_img: np.ndarray | None = None,
 ) -> np.ndarray:
     court = (court_img if court_img is not None else draw_court(NCAA, scale, padding)).copy()
     for p in pos.players:
-        pts = [r for r in p.trajectory if t - trail_seconds <= r[0] <= t + 1e-6]
+        pts = [r for r in p.trajectory if t - trail_seconds <= r[0] <= t + 1e-6 and finite(r)]
         if not pts:
             continue
         color = team_color(p.team)
@@ -74,11 +144,25 @@ def render_court_frame(
         txt = p.jersey or str(p.track_id % 1000)
         cv2.putText(court, txt, (cx - 6 * len(txt), cy - int(1.6 * scale)), cv2.FONT_HERSHEY_SIMPLEX,
                     0.4, TEXT_BGR, 1, cv2.LINE_AA)
-    ball = [r for r in pos.ball if abs(r[0] - t) < 0.5 / pos.fps]
+    ball = [r for r in pos.ball if abs(r[0] - t) < 0.5 / pos.fps and finite(r)]
     if ball:
         bx, by = to_pixel((ball[0][1], ball[0][2]), scale, padding)
         cv2.circle(court, (bx, by), int(0.8 * scale), BALL_BGR, -1, cv2.LINE_AA)
         cv2.circle(court, (bx, by), int(0.8 * scale), (0, 0, 0), 1, cv2.LINE_AA)
+    # event banners and a ring around the player named in the event
+    y = court.shape[0] - 12
+    for e in active_events(pos, t):
+        style = event_style(e)
+        if style is None:
+            continue
+        tag, color = style
+        h = draw_banner(court, 12, y - 30, tag, f"{e.get('clock_text', '')}  {e.get('text', '')}"[:90], color)
+        y -= h + 6
+        player = player_for_event(pos, e)
+        xy = position_at(player, t) if player else None
+        if xy:
+            cx, cy = to_pixel(xy, scale, padding)
+            cv2.circle(court, (cx, cy), int(2.2 * scale), color, 3, cv2.LINE_AA)
     bar = np.full((header, court.shape[1], 3), (245, 245, 245), dtype=np.uint8)
     off = pos.offense_team or "?"
     txt = (f"Possession {pos.possession_id}  |  {off} offense -> {pos.attacking_basket} basket  |  "
@@ -93,6 +177,24 @@ def render_court_frame(
 
 def draw_overlay(frame: np.ndarray, pos: Possession, t: float, box_index: dict[int, dict]) -> np.ndarray:
     out = frame
+    y = 16
+    highlighted = {}
+    for e in active_events(pos, t):
+        style = event_style(e)
+        if style is None:
+            continue
+        tag, color = style
+        y += draw_banner(out, 16, y, tag, f"{e.get('clock_text', '')}  {e.get('text', '')}"[:80], color, scale=0.6) + 6
+        player = player_for_event(pos, e)
+        if player is not None:
+            highlighted[player.track_id] = color
+    for p in pos.players:
+        hl = highlighted.get(p.track_id)
+        if hl is not None:
+            box = box_index[p.track_id].get(t)
+            if box is not None:
+                x1, y1, x2, y2 = [int(round(v)) for v in box]
+                cv2.rectangle(out, (x1 - 6, y1 - 6), (x2 + 6, y2 + 6), hl, 4)
     for p in pos.players:
         box = box_index[p.track_id].get(t)
         if box is None:
@@ -106,6 +208,11 @@ def draw_overlay(frame: np.ndarray, pos: Possession, t: float, box_index: dict[i
         cv2.putText(out, label, (x1 + 3, y1 - 4), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1,
                     cv2.LINE_AA)
     return out
+
+
+def clip_name(pos: Possession) -> str:
+    off = (pos.offense_team or "unknown").lower()
+    return f"p{pos.possession_id:03d}_{int(pos.start_time):04d}s_{off}_{pos.outcome or 'none'}.mp4"
 
 
 def box_lookup(pos: Possession) -> dict[int, dict[float, list[float]]]:

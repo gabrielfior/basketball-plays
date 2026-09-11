@@ -19,6 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from basketball_plays import playbyplay as pbp
 from basketball_plays import scoreboard as sb
+from basketball_plays.rosters import ROSTERS
 from basketball_plays.schema import read_possessions, write_jsonl
 
 
@@ -79,7 +80,13 @@ def main() -> None:
             pos.scoreboard_points = pos.score_after[pos.offense_team] - pos.score_before[pos.offense_team]
         if c0 is not None and c1 is not None:
             window = assigned.get(pos.possession_id, [])
-            pos.events = [e.to_dict() for e in window]
+            times = pbp.locate_events(window, reads, pos.start_time, pos.end_time, c0, c1)
+            pos.events = []
+            for e, t in zip(window, times):
+                d = e.to_dict()
+                d["t"] = t
+                d["player_team"], d["player"] = pbp.match_player(e.text, ROSTERS)
+                pos.events.append(d)
             pos.outcome, pos.points_scored = pbp.derive_outcome(window, pos.offense_team)
             stats["with_clock"] += 1
         stats[pos.outcome or "unlabelled"] += 1

@@ -153,3 +153,34 @@ def assign_events(windows: list[tuple[int, float | None, float | None, str | Non
         pick = cands[-1] if _dead_ball(e) else cands[0]
         out[pick[0]].append(e)
     return out
+
+
+def match_player(text: str, rosters: dict[str, dict[str, str]]) -> tuple[str | None, str | None]:
+    """(team, player name) for the roster name mentioned in an event text, longest match first."""
+    best = (None, None, 0)
+    for team, roster in rosters.items():
+        for name in roster.values():
+            if name in text and len(name) > best[2]:
+                best = (team, name, len(name))
+    return best[0], best[1]
+
+
+def locate_events(
+    events: list[Event], reads, start_t: float, end_t: float, clock_start: float | None, clock_end: float | None,
+) -> list[float | None]:
+    """Video time for each event: the first scoreboard read inside the possession showing the
+    event's clock, else a linear interpolation between the possession's clock endpoints."""
+    out = []
+    for e in events:
+        t = None
+        for r in reads:
+            if r.clock is not None and start_t - 2 <= r.t <= end_t + 3 and abs(r.clock - e.clock) < 0.6:
+                t = r.t
+                break
+        if t is None and clock_start is not None and clock_end is not None and clock_start > clock_end:
+            frac = (clock_start - e.clock) / (clock_start - clock_end)
+            t = start_t + min(max(frac, 0.0), 1.0) * (end_t - start_t)
+        elif t is None:
+            t = end_t
+        out.append(round(float(t), 2))
+    return out

@@ -72,6 +72,16 @@ def parse_events(plays: list[dict], period: int = 1) -> list[Event]:
     return out
 
 
+def score_states(events: list[Event]) -> list[tuple[int, int]]:
+    """Distinct (away, home) score pairs in order, starting at (0, 0)."""
+    states = [(0, 0)]
+    for e in events:
+        st = (e.away_score, e.home_score)
+        if st != states[-1]:
+            states.append(st)
+    return states
+
+
 def events_in_window(events: list[Event], clock_start: float, clock_end: float, margin: float = 1.0) -> list[Event]:
     """Events whose clock lies within a possession's clock range (start > end; clock counts down)."""
     hi, lo = max(clock_start, clock_end) + margin, min(clock_start, clock_end) - margin

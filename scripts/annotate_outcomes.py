@@ -23,15 +23,6 @@ from basketball_plays.rosters import ROSTERS
 from basketball_plays.schema import read_possessions, write_jsonl
 
 
-def score_states(events: list[pbp.Event]) -> list[tuple[int, int]]:
-    states = [(0, 0)]
-    for e in events:
-        st = (e.away_score, e.home_score)
-        if st != states[-1]:
-            states.append(st)
-    return states
-
-
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("video")
@@ -57,7 +48,7 @@ def main() -> None:
 
     summary = pbp.fetch_summary(cache=Path(args.espn_cache))
     events = pbp.parse_events(summary["plays"], period=1)
-    reads = sb.clean_timeline(raw, valid_states=score_states(events))
+    reads = sb.clean_timeline(raw, valid_states=pbp.score_states(events))
     print(f"scoreboard: {len(reads)} reads, clock trusted on {sum(r.clock is not None for r in reads) / len(reads):.0%}, "
           f"score on {sum(r.away is not None for r in reads) / len(reads):.0%}; {len(events)} play-by-play events")
 

@@ -61,6 +61,15 @@ mkdir -p data && uvx yt-dlp -f "bestvideo[height<=720][ext=mp4][vcodec^=avc1]+be
    uv run python scripts/summarize_possessions.py data/trajectories.jsonl --out data/possessions.csv
    ```
 
+6. Play-recognition spike (Phase 0 of `docs/superpowers/specs/2026-09-11-duke-play-recognition-design.md`):
+   Duke half-court possessions from ESPN intervals, setup frames and a montage of setup snapshots.
+
+   ```bash
+   uv run python scripts/spike_setups.py data/trajectories.jsonl --out data/plays/spike
+   ```
+
+   Writes `halfcourt.jsonl`, `setups.png` and `report.md` with the go/no-go numbers.
+
 ## Output format: `trajectories.jsonl`
 
 One JSON object per possession:

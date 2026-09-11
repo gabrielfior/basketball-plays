@@ -1,5 +1,6 @@
 from basketball_plays import halfcourt as H
 from basketball_plays.playbyplay import Event
+from basketball_plays.scoreboard import ScoreboardRead
 
 D, M = "Duke", "Michigan"
 
@@ -180,3 +181,35 @@ def test_first_shot_with_no_jump_ball_opens_a_period_interval():
     events = [ev("19:40", D, "JumpShot", "Cameron Boozer makes 10-foot jumper")]
     first = H.intervals(events)[0]
     assert summary(first) == (D, 1200, 1180, "period", "shot", False)
+
+
+def reads(pairs):
+    return [ScoreboardRead(t=float(t), clock=c, clock_text=None, away=None, home=None)
+            for t, c in pairs]
+
+
+def test_clock_to_video_first_and_last_read_of_a_stopped_clock():
+    rs = reads([(10, 1000), (11, 999), (12, 998), (13, 998), (14, 998), (15, 998),
+                (16, 997)])
+    assert H.clock_to_video(rs, 998, "first") == 12.0
+    assert H.clock_to_video(rs, 998, "last") == 15.0
+    assert H.clock_to_video(rs, 997, "first") == 16.0
+
+
+def test_clock_to_video_interpolates_across_missing_reads():
+    rs = reads([(10, 1000), (11, None), (12, None), (13, 997)])
+    # 999 lies one third of the way from 1000 to 997
+    assert H.clock_to_video(rs, 999, "first") == 11.0
+    assert H.clock_to_video(rs, 998, "last") == 12.0
+
+
+def test_clock_to_video_refuses_to_bridge_a_replay():
+    rs = reads([(10, 1000), (60, 990)])
+    assert H.clock_to_video(rs, 995, "first") is None
+    assert H.clock_to_video(rs, 995, "first", max_gap_s=100) == 35.0
+
+
+def test_clock_to_video_outside_the_timeline_is_none():
+    rs = reads([(10, 1000), (11, 999)])
+    assert H.clock_to_video(rs, 1100, "first") is None
+    assert H.clock_to_video(rs, 900, "last") is None

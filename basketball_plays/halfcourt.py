@@ -233,3 +233,31 @@ def intervals(events: list[Event], period_length: float = 1200.0) -> list[Interv
     # an interval still open here means the event list was truncated ("End Period" closes a real
     # period inside the loop); it is dropped rather than guessed
     return [iv for iv in out if iv.end_clock < iv.start_clock]
+
+
+def clock_to_video(reads, clock: float, mode: str,
+                   max_gap_s: float = 20.0) -> float | None:
+    """Video time at which the scoreboard showed `clock`.
+
+    `mode="first"` is the moment the clock reached the value (a running-clock event such as a
+    rebound or shot); `mode="last"` is the moment just before it moved on (the inbound after a
+    stoppage). Falls back to linear interpolation between the nearest reads on either side, or
+    None when that pair is more than `max_gap_s` seconds of video apart.
+    """
+    if mode not in ("first", "last"):
+        raise ValueError(mode)
+    known = sorted(((r.t, r.clock) for r in reads if r.clock is not None),
+                   key=lambda p: p[0])
+    exact = [t for t, c in known if abs(c - clock) <= 0.5]
+    if exact:
+        return float(exact[0] if mode == "first" else exact[-1])
+    above = [(t, c) for t, c in known if c > clock]
+    below = [(t, c) for t, c in known if c < clock]
+    if not above or not below:
+        return None
+    t_hi, c_hi = max(above, key=lambda p: p[0])  # latest read still above the target clock
+    t_lo, c_lo = min(below, key=lambda p: p[0])  # earliest read already below it
+    if t_lo <= t_hi or t_lo - t_hi > max_gap_s:
+        return None
+    frac = (c_hi - clock) / (c_hi - c_lo)
+    return round(float(t_hi + frac * (t_lo - t_hi)), 2)

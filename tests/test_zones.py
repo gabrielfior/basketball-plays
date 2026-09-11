@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 
 from basketball_plays import zones as Z
 
@@ -9,6 +10,13 @@ def test_mirror_right_basket_flips_x_only():
     assert np.allclose(out, [[84.0, 5.0], [14.0, 45.0]])
     assert np.allclose(Z.mirror_to_canonical(xy, "left"), xy)
     assert out is not xy
+
+
+def test_mirror_rejects_an_unknown_attacking_basket():
+    xy = np.array([[10.0, 5.0]])
+    for bad in ("Left", "", None, "duke"):
+        with pytest.raises(ValueError):
+            Z.mirror_to_canonical(xy, bad)
 
 
 def test_named_spots_land_in_expected_zones():

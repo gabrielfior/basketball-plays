@@ -1,4 +1,3 @@
-# scripts/spike_setups.py
 """Phase 0 spike: Duke half-court records, setup snapshots and go/no-go numbers for one game.
 
     uv run python scripts/spike_setups.py data/trajectories.jsonl \
@@ -25,6 +24,49 @@ from basketball_plays import scoreboard as sb
 from basketball_plays import zones as Z
 from basketball_plays.schema import read_possessions
 
+SENSITIVITY_MOVE_FT = (1.0, 1.5, 2.0)
+SENSITIVITY_MIN_PLAYERS = (4, 3)
+
+
+def pct(n: int, total: int) -> str:
+    """`n/N (p%)`, the one way this report states a proportion."""
+    return f"{n}/{total} ({n / total:.0%})" if total else f"{n}/0 (n/a)"
+
+
+def record_tracks(r: H.HalfcourtRecord) -> list[H.Track]:
+    """The record's stored (already canonical, already clipped) player tracks."""
+    return [
+        H.Track(p["track_id"], p["name"], p["jersey"],
+                {round(row[0], 3): (row[1], row[2]) for row in p["trajectory"]}, set())
+        for p in r.players
+    ]
+
+
+def sensitivity_table(halfcourt: list[H.HalfcourtRecord]) -> list[str]:
+    """Setup rate over the half-court records for a grid of stillness thresholds.
+
+    Re-runs `find_setup` itself, so the dead-ball window, the full-court exception, the
+    frontcourt requirement and the tolerant lookback are all exactly as in the pipeline.
+    """
+    header = ["| max_move_ft | " + " | ".join(f"min players {n}" for n in SENSITIVITY_MIN_PLAYERS)
+              + " |", "|---|" + "---|" * len(SENSITIVITY_MIN_PLAYERS)]
+    rows = []
+    for move in SENSITIVITY_MOVE_FT:
+        cells = []
+        for min_players in SENSITIVITY_MIN_PLAYERS:
+            hits = 0
+            for r in halfcourt:
+                tracks = record_tracks(r)
+                handler = {round(t, 3): (x, y) for t, x, y in r.ball_handler}
+                _, no_setup = H.find_setup(
+                    tracks, handler, r.start_type, r.t_start, r.t0, r.t_end,
+                    full_court=r.full_court, max_move_ft=move, min_players=min_players,
+                )
+                hits += not no_setup
+            cells.append(pct(hits, len(halfcourt)))
+        rows.append(f"| {move} | " + " | ".join(cells) + " |")
+    return header + rows
+
 
 def main() -> None:
     ap = argparse.ArgumentParser(
@@ -38,6 +80,8 @@ def main() -> None:
     ap.add_argument("--raw-ocr", default="data/scoreboard_raw.jsonl")
     ap.add_argument("--out", default="data/plays/spike")
     ap.add_argument("--cols", type=int, default=6)
+    ap.add_argument("--sensitivity", action="store_true",
+                    help="append a setup-rate table over stillness thresholds")
     args = ap.parse_args()
 
     out = Path(args.out)
@@ -63,28 +107,32 @@ def main() -> None:
 
     occ = np.zeros(Z.N_ZONES)
     for r in with_setup:
-        occ += Z.occupancy(np.array([[x, y] for _, x, y in Mo.positions_at(r, r.setup)]))
+        occ += Z.occupancy(np.array([[x, y] for _, x, y in Mo.labelled_positions_at(r, r.setup)]))
     top_zones = sorted(zip(Z.ZONE_NAMES, occ), key=lambda p: -p[1])[:10]
     visible = Counter(r.n_visible_at_setup for r in with_setup)
     setup_rate = len(with_setup) / len(halfcourt) if halfcourt else 0.0
+    suspect = [r for r in with_setup if r.suspect_duplicates]
 
     lines = [
         f"# Phase 0 spike: {args.team}, game {args.game_id}, period {args.period}", "",
         "| Metric | Value |", "|---|---|",
         f"| ESPN intervals for {args.team} | {len(records)} |",
-        f"| Located in video (clock mapped, t0 found) | {len(located)} |",
-        f"| Transition (excluded) | {len(located) - len(halfcourt)} |",
-        f"| Half-court records | {len(halfcourt)} |",
+        f"| Located in video (clock mapped, t0 found) | {pct(len(located), len(records))} |",
+        f"| Transition (excluded) | {pct(len(located) - len(halfcourt), len(located))} |",
+        f"| Half-court records | {pct(len(halfcourt), len(located))} |",
+        f"| Full-court starts | {pct(sum(1 for r in halfcourt if r.full_court), len(halfcourt))} |",
         f"| Start types | {dict(Counter(r.start_type for r in halfcourt))} |",
-        f"| With a setup frame | {len(with_setup)} ({setup_rate:.0%}) |",
+        f"| With a setup frame | {pct(len(with_setup), len(halfcourt))} |",
         "| Setup rate by start type | "
         + ", ".join(
-            f"{k}: {sum(1 for r in with_setup if r.start_type == k)}/"
-            f"{sum(1 for r in halfcourt if r.start_type == k)}"
+            f"{k}: " + pct(sum(1 for r in with_setup if r.start_type == k),
+                           sum(1 for r in halfcourt if r.start_type == k))
             for k in sorted({r.start_type for r in halfcourt})
         )
         + " |",
         f"| Players visible at setup | {dict(sorted(visible.items()))} |",
+        "| Records with more than 5 visible at setup | "
+        + pct(len(suspect), len(with_setup)) + " |",
         f"| Outcomes | {dict(Counter(r.outcome or 'none' for r in halfcourt))} |", "",
         "Go criterion: setup rate >= 60% -> "
         + ("**MET**" if setup_rate >= 0.6 else "**NOT MET**"), "",
@@ -99,6 +147,10 @@ def main() -> None:
             f"#{r.index} {r.start_type} {r.clock_start:.0f}" for r in records if r not in located
         ),
     ]
+    if args.sensitivity:
+        lines += ["", "## Threshold sensitivity", "",
+                  f"Setup rate over the {len(halfcourt)} half-court records.", "",
+                  *sensitivity_table(halfcourt)]
     (out / "report.md").write_text("\n".join(lines) + "\n")
     print("\n".join(lines))
 

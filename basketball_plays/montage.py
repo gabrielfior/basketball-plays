@@ -5,6 +5,7 @@ from __future__ import annotations
 import cv2
 import numpy as np
 
+from basketball_plays import halfcourt as H
 from basketball_plays.court import NCAA, draw_court, to_pixel
 from basketball_plays.halfcourt import HalfcourtRecord
 from basketball_plays.render import TEXT_BGR, clock_text
@@ -30,8 +31,17 @@ def frontcourt_image() -> np.ndarray:
     return full[:, :right].copy()
 
 
-def positions_at(rec: HalfcourtRecord, t: float) -> list[tuple[str, float, float]]:
-    out = []
+MERGE_FT = 1.0
+
+
+def labelled_positions_at(rec: HalfcourtRecord, t: float) -> list[tuple[str, float, float]]:
+    """(label, x, y) per *merged* player position at `t`.
+
+    Raw tracks are merged the same way `halfcourt.positions_at` merges them, so the number of
+    discs drawn matches the record's `n_visible_at_setup`; each merged position takes the label
+    of the first raw track within `MERGE_FT` of it (jersey, else the track id mod 1000).
+    """
+    raw: list[tuple[str, float, float]] = []
     for p in rec.players:
         best = None
         for row in p["trajectory"]:
@@ -40,7 +50,15 @@ def positions_at(rec: HalfcourtRecord, t: float) -> list[tuple[str, float, float
                 best = row
         if best is not None:
             label = p.get("jersey") or str(p["track_id"] % 1000)
-            out.append((label, float(best[1]), float(best[2])))
+            raw.append((label, float(best[1]), float(best[2])))
+    key = round(t, 3)
+    tracks = [H.Track(i, None, None, {key: (x, y)}, set())
+              for i, (_, x, y) in enumerate(raw)]
+    out = []
+    for x, y in H.positions_at(tracks, t, MERGE_FT):
+        label = next((lbl for lbl, rx, ry in raw
+                      if np.hypot(x - rx, y - ry) < MERGE_FT), "?")
+        out.append((label, x, y))
     return out
 
 
@@ -68,7 +86,13 @@ def render_setup_tile(rec: HalfcourtRecord, trail_s: float = 2.0) -> np.ndarray:
         if handler is not None:
             cx, cy = to_pixel(handler, SCALE, PADDING)
             cv2.circle(court, (cx, cy), int(2.2 * SCALE), HANDLER_BGR, 2, cv2.LINE_AA)
-        for label, x, y in positions_at(rec, t):
+        for label, x, y in labelled_positions_at(rec, t):
+            if x >= NCAA.length / 2:
+                # off the crop: show it as a hollow disc pinned to the half-court edge
+                cy = to_pixel((0.0, y), SCALE, PADDING)[1]
+                cx = court.shape[1] - int(1.3 * SCALE) - 2
+                cv2.circle(court, (cx, cy), int(1.3 * SCALE), DUKE_BGR, 2, cv2.LINE_AA)
+                continue
             cx, cy = to_pixel((x, y), SCALE, PADDING)
             cv2.circle(court, (cx, cy), int(1.3 * SCALE), DUKE_BGR, -1, cv2.LINE_AA)
             cv2.putText(court, label, (cx - 4 * len(label), cy + 4), cv2.FONT_HERSHEY_SIMPLEX, 0.35,

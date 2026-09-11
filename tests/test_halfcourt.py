@@ -1,5 +1,7 @@
 import json
 
+import pytest
+
 from basketball_plays import halfcourt as H
 from basketball_plays.playbyplay import Event
 from basketball_plays.schema import PlayerTrack, Possession
@@ -80,6 +82,18 @@ def test_duke_intervals_in_the_opening_sequence():
         (D, 998, 990, "live", "shot", False),        # def reb, Evans three
         (D, 984, 956, "dead", "shot", False),        # after Lendeborg and-one, Brown dunk
     ]
+
+
+def test_duke_full_court_starts_follow_a_michigan_score():
+    duke_intervals = [i for i in H.intervals(OPENING) if i.team == D]
+    # True exactly where Duke inbounds under its own basket after Michigan scored: Mara's dunk
+    # at 19:32, Johnson's jumper at 18:59, Lendeborg's layup at 17:03 and Lendeborg's made
+    # and-one free throw at 16:24. The 1075 start is a sideline inbound after the foul on Mara
+    # stopped a Duke frontcourt possession; the other starts are fouls or defensive rebounds.
+    assert [i.full_court for i in duke_intervals] == [
+        True, True, False, False, False, False, True, False, True,
+    ]
+    assert [i.start_clock for i in duke_intervals if i.full_court] == [1172, 1139, 1023, 984]
 
 
 def test_michigan_gets_an_ato_interval_after_the_tv_timeout():
@@ -212,6 +226,14 @@ def test_clock_to_video_refuses_to_bridge_a_replay():
     assert H.clock_to_video(rs, 995, "first", max_gap_s=100) == 35.0
 
 
+def test_clock_to_video_restricts_reads_to_the_period_window():
+    # the same game clock comes round again in the second half
+    rs = reads([(99, 601), (100, 600), (101, 599), (2499, 601), (2500, 600), (2501, 599)])
+    assert H.clock_to_video(rs, 600, "last") == 2500.0
+    assert H.clock_to_video(rs, 600, "last", t_hi=1500) == 100.0
+    assert H.clock_to_video(rs, 600, "first", t_lo=1500) == 2500.0
+
+
 def test_clock_to_video_outside_the_timeline_is_none():
     rs = reads([(10, 1000), (11, 999)])
     assert H.clock_to_video(rs, 1100, "first") is None
@@ -232,7 +254,7 @@ def test_gather_tracks_mirrors_right_basket_and_filters_team_and_window():
                        holding=[101.0])
     mich = PlayerTrack(2, "Michigan", None, None, traj(100.0, 50, 60.0, 10.0), [])
     pos = make_possession([duke, mich], basket="right")
-    tracks = H.gather_tracks([pos], "Duke", 100.5, 102.0)
+    tracks = H.gather_tracks([pos], "Duke", 100.5, 102.0, "right")
     assert [t.track_id for t in tracks] == [1]
     assert min(tracks[0].xy) == 100.5 and max(tracks[0].xy) == 102.0
     assert tracks[0].xy[100.5] == (24.0, 10.0)          # 94 - 70
@@ -246,9 +268,37 @@ def test_gather_tracks_spans_two_vision_possessions_and_skips_nan():
                     [[102.0, float("nan"), float("nan")], [102.1, 31.0, 10.0]], [])
     tracks = H.gather_tracks(
         [make_possession([a], t0=100, t1=102), make_possession([b], pid=1, t0=102, t1=103)],
-        "Duke", 100.0, 103.0)
+        "Duke", 100.0, 103.0, "left")
     assert sorted(t.track_id for t in tracks) == [1, 5]
     assert 102.0 not in next(t for t in tracks if t.track_id == 5).xy
+
+
+def test_attack_direction_is_the_majority_over_the_team_own_possessions():
+    duke = [make_possession([], basket="right", pid=i) for i in range(3)]
+    duke[2].attacking_basket = "left"                      # one mislabelled vision possession
+    mich = make_possession([], basket="left", pid=9)
+    mich.offense_team = "Michigan"
+    assert H.attack_direction(duke + [mich], "Duke") == "right"
+    assert H.attack_direction(duke + [mich], "Michigan") == "left"
+    with pytest.raises(ValueError):
+        H.attack_direction(duke, "Villanova")
+
+
+def test_gather_tracks_mirrors_by_the_team_direction_not_the_possession():
+    # a Duke player standing at raw x = 70 across two vision possessions: Duke's own (attacking
+    # right) and Michigan's (attacking left, where the Duke track is a defender). Both must
+    # mirror the same way, by Duke's direction, or the second one lands 180 degrees out.
+    rows = traj(100.0, 20, 70.0, 10.0)
+    duke_pos = make_possession(
+        [PlayerTrack(1, "Duke", "12", None, rows[:10], [])], basket="right", t0=100.0, t1=100.9)
+    mich_pos = make_possession(
+        [PlayerTrack(1, "Duke", "12", None, rows[10:], [])], basket="left", pid=1,
+        t0=101.0, t1=101.9)
+    mich_pos.offense_team = "Michigan"
+    possessions = [duke_pos, mich_pos]
+    tracks = H.gather_tracks(possessions, "Duke", 100.0, 101.9,
+                             H.attack_direction(possessions, "Duke"))
+    assert [x for tr in tracks for x, _ in tr.xy.values()] == [24.0] * 20
 
 
 def test_ball_handler_series_uses_holding_times():
@@ -298,6 +348,15 @@ def test_still_players_survives_a_track_break():
     assert H.still_players([a, b] + others, 100.9) == (5, 5)
 
 
+def test_still_players_tolerates_a_dropped_frame_at_the_lookback_time():
+    tracks = _still_tracks(100.0, 10)
+    gapped = [H.Track(tr.track_id, None, None,
+                      {t: p for t, p in tr.xy.items() if abs(t - 100.4) > 1e-6}, set())
+              for tr in tracks]
+    assert all(100.4 not in tr.xy for tr in gapped)
+    assert H.still_players(gapped, 100.9) == (5, 5)
+
+
 def test_find_setup_dead_ball_takes_the_last_still_frame_before_the_inbound():
     tracks = _still_tracks(96.0, 60)  # still from 96.0 to 101.9
     setup, no_setup = H.find_setup(tracks, {}, "dead", t_start=100.0, t0=100.4, t_end=115.0)
@@ -313,6 +372,26 @@ def test_find_setup_live_takes_the_first_still_frame_with_handler_beyond_the_arc
     assert (setup, no_setup) == (102.5, False)
     inside = {t: (12.0, 25.0) for t in still[0].xy}
     assert H.find_setup(tracks, inside, "live", 99.0, 100.0, 115.0) == (100.0, True)
+
+
+def test_find_setup_rejects_a_still_backcourt_lineup():
+    # five players standing around x = 70: still, but waiting to inbound in their own backcourt
+    tracks = [H.Track(i, None, None,
+                      {r[0]: (r[1], r[2]) for r in traj(96.0, 60, 68.0 + i, 5.0 + 8 * i)}, set())
+              for i in range(5)]
+    assert H.find_setup(tracks, {}, "dead", t_start=100.0, t0=100.4, t_end=115.0) == (100.4, True)
+    assert H.find_setup(tracks, {}, "live", 99.0, 100.4, 115.0) == (100.4, True)
+
+
+def test_find_setup_full_court_dead_start_uses_the_live_rule_from_t0():
+    # backcourt and moving until 101.9, then set up in the frontcourt from 102.0
+    back = [H.Track(i, None, None,
+                    {r[0]: (r[1], r[2]) for r in traj(97.0, 50, 60.0 + 3 * i, 5.0 + 8 * i, dx=0.4)},
+                    set()) for i in range(5)]
+    front = _still_tracks(102.0, 40)
+    tracks = [H.Track(i, None, None, {**back[i].xy, **front[i].xy}, set()) for i in range(5)]
+    # the dead-ball window [97, 101.5] only holds the backcourt lineup, so it must be skipped
+    assert H.find_setup(tracks, {}, "dead", 100.0, 102.0, 115.0, full_court=True) == (102.5, False)
 
 
 def test_find_setup_without_a_still_frame_flags_no_setup():
@@ -336,11 +415,14 @@ def test_build_records_end_to_end_on_a_synthetic_possession():
         players.append(
             PlayerTrack(10 + i, "Duke", None, None, rows, [], holding=[66.5] if i == 0 else [])
         )
-    pos = make_possession(players, basket="right", t0=60.0, t1=70.0)
+    # the vision possession list spans the period: it bounds the scoreboard reads a clock may
+    # map to (the same clock comes round again in the second half)
+    pos = make_possession(players, basket="right", t0=60.0, t1=95.0)
     recs = H.build_records("test", "Duke", events, rs, [pos])
     assert len(recs) == 1
     r = recs[0]
     assert (r.start_type, r.terminal, r.clock_start, r.clock_end) == ("dead", "shot", 1172, 1150)
+    assert r.full_court is True and r.suspect_duplicates is False
     assert r.located and r.t_start == 63.0                    # last read showing 19:32 -> inbound
     # half a second of slack past the read
     assert r.t_end == H.clock_to_video(rs, 1150, "first") + 0.5

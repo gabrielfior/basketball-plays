@@ -24,12 +24,30 @@ def test_frontcourt_image_is_half_the_court():
     assert img.shape[0] == round(50 * Mo.SCALE) + 2 * Mo.PADDING
 
 
-def test_positions_at_picks_the_nearest_frame_and_labels_by_jersey_then_id():
+def test_labelled_positions_at_picks_the_nearest_frame_and_labels_by_jersey_then_id():
     r = rec([player(1, "Cameron Boozer", "12", {100.0: (20.0, 25.0), 100.1: (21.0, 25.0)}),
              player(2, None, None, {100.0: (28.0, 25.0)})])
-    got = Mo.positions_at(r, 100.0)
+    got = Mo.labelled_positions_at(r, 100.0)
     assert ("12", 20.0, 25.0) in got and ("2", 28.0, 25.0) in got
-    assert Mo.positions_at(r, 105.0) == []
+    assert Mo.labelled_positions_at(r, 105.0) == []
+
+
+def test_labelled_positions_at_merges_a_fragmented_track_into_one_disc():
+    # the same player under two track ids, half a foot apart: one merged position, one label
+    r = rec([player(1, None, "12", {100.0: (20.0, 25.0)}),
+             player(7, None, None, {100.0: (20.4, 25.2)}),
+             player(2, None, None, {100.0: (28.0, 25.0)})])
+    assert Mo.labelled_positions_at(r, 100.0) == [("12", 20.0, 25.0), ("2", 28.0, 25.0)]
+
+
+def test_render_setup_tile_pins_a_backcourt_player_to_the_crop_edge():
+    # x = 70 is off the frontcourt crop; without the pin the disc would vanish silently
+    r = rec([player(1, None, "12", {100.0: (70.0, 25.0)})])
+    tile = Mo.render_setup_tile(r)
+    court = tile[Mo.HEADER:]
+    base = Mo.frontcourt_image()
+    edge = court[:, court.shape[1] - 2 * int(1.3 * Mo.SCALE) - 4:]
+    assert not np.array_equal(edge, base[:, base.shape[1] - 2 * int(1.3 * Mo.SCALE) - 4:])
 
 
 def test_render_setup_tile_has_fixed_size_and_draws_something():

@@ -33,7 +33,13 @@ assert len(ZONE_NAMES) == N_ZONES
 
 
 def mirror_to_canonical(xy: np.ndarray, attacking_basket: str) -> np.ndarray:
-    """Copy of (n, 2) court points with x flipped when the offence attacks the right basket."""
+    """Copy of (n, 2) court points with x flipped when the offence attacks the right basket.
+
+    Raises `ValueError` on anything but "left" or "right": a typo or a None would otherwise pass
+    silently as "no mirroring" and leave half the data 180 degrees out.
+    """
+    if attacking_basket not in ("left", "right"):
+        raise ValueError(f"attacking_basket must be 'left' or 'right', got {attacking_basket!r}")
     out = np.array(xy, dtype=float, copy=True).reshape(-1, 2)
     if attacking_basket == "right":
         out[:, 0] = NCAA.length - out[:, 0]

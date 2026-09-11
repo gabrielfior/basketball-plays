@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections import Counter
 from dataclasses import asdict, dataclass, field
 
 import numpy as np
@@ -23,6 +24,9 @@ class Interval:
     start_clock: float
     end_clock: float
     start_type: str
+    # True when the interval starts with a full-court inbound (after the opponent's made shot or
+    # made last free throw): the team is still in its backcourt at `start_clock`.
+    full_court: bool = field(default=False, kw_only=True)
     terminal: str
     events: list[Event] = field(default_factory=list)
     free_throws: bool = False
@@ -128,11 +132,13 @@ def intervals(events: list[Event], period_length: float = 1200.0) -> list[Interv
             out.append(cur)
             cur = None
 
-    def open_(team: str | None, clock: float, start_type: str) -> None:
+    def open_(team: str | None, clock: float, start_type: str,
+              full_court: bool = False) -> None:
         nonlocal cur, pending_ato, last_shot
         if team is None:
             return
-        cur = Interval(team, clock, clock, ATO if pending_ato else start_type, STOPPAGE)
+        cur = Interval(team, clock, clock, ATO if pending_ato else start_type, STOPPAGE,
+                       full_court=full_court)
         pending_ato = False
         last_shot = None
 
@@ -170,7 +176,7 @@ def intervals(events: list[Event], period_length: float = 1200.0) -> list[Interv
             if cur is not None and cur.team != e.team:
                 cur = None
             if (_is_last_free_throw(e) or "1 of 1" in e.text.lower()) and _is_made(e):
-                open_(other.get(e.team), e.clock, DEAD)
+                open_(other.get(e.team), e.clock, DEAD, full_court=True)
             continue
         if cur is not None:
             cur.events.append(e)
@@ -188,7 +194,7 @@ def intervals(events: list[Event], period_length: float = 1200.0) -> list[Interv
             last_shot = e
             if _is_made(e):
                 close(e.clock, SHOT)
-                open_(other.get(e.team), e.clock, DEAD)
+                open_(other.get(e.team), e.clock, DEAD, full_court=True)
             continue
         if _is_off_rebound(e):
             if cur is None:
@@ -241,17 +247,25 @@ def intervals(events: list[Event], period_length: float = 1200.0) -> list[Interv
 
 
 def clock_to_video(reads, clock: float, mode: str,
-                   max_gap_s: float = 20.0) -> float | None:
+                   max_gap_s: float = 20.0, t_lo: float | None = None,
+                   t_hi: float | None = None) -> float | None:
     """Video time at which the scoreboard showed `clock`.
 
     `mode="first"` is the moment the clock reached the value (a running-clock event such as a
     rebound or shot); `mode="last"` is the moment just before it moved on (the inbound after a
     stoppage). Falls back to linear interpolation between the nearest reads on either side, or
     None when that pair is more than `max_gap_s` seconds of video apart.
+
+    A game clock repeats every period, so `t_lo`/`t_hi` restrict the reads considered to the
+    video span of the period being mapped; without them the second half's reads would compete
+    with the first half's for the same clock value.
     """
     if mode not in ("first", "last"):
         raise ValueError(mode)
-    known = sorted(((r.t, r.clock) for r in reads if r.clock is not None),
+    known = sorted(((r.t, r.clock) for r in reads
+                    if r.clock is not None
+                    and (t_lo is None or r.t >= t_lo)
+                    and (t_hi is None or r.t <= t_hi)),
                    key=lambda p: p[0])
     exact = [t for t, c in known if abs(c - clock) <= 0.5]
     if exact:
@@ -285,10 +299,30 @@ class Track:
     holding: set[float]
 
 
+def attack_direction(possessions: list[Possession], team: str) -> str:
+    """The basket `team` attacks in this period: the majority `attacking_basket` over the vision
+    possessions where `team` is the offence.
+
+    `Possession.attacking_basket` describes the offence of that possession, so it is only a
+    statement about `team` when `team` is the one attacking. Raises `ValueError` when no
+    possession has `offense_team == team`.
+    """
+    votes = Counter(p.attacking_basket for p in possessions if p.offense_team == team)
+    if not votes:
+        raise ValueError(f"no vision possession has offense_team == {team!r}")
+    return votes.most_common(1)[0][0]
+
+
 def gather_tracks(possessions: list[Possession], team: str, t_start: float,
-                   t_end: float) -> list[Track]:
+                   t_end: float, attacking_basket: str) -> list[Track]:
     """Every `team` track from any vision possession overlapping [t_start, t_end], clipped to
-    the window, mirrored so the offence attacks x = 5.25. NaN positions are dropped."""
+    the window, mirrored so the offence attacks x = 5.25. NaN positions are dropped.
+
+    `attacking_basket` is the basket `team` attacks (see `attack_direction`), not the basket of
+    the possession a track was read from: `team` tracks also appear in the opponent's
+    possessions, as defenders, and mirroring those by the possession's own direction would flip
+    them 180 degrees.
+    """
     out: list[Track] = []
     for pos in possessions:
         if pos.end_time < t_start or pos.start_time > t_end:
@@ -301,7 +335,7 @@ def gather_tracks(possessions: list[Possession], team: str, t_start: float,
             if not rows:
                 continue
             xy = zones.mirror_to_canonical(np.array([[r[1], r[2]] for r in rows]),
-                                            pos.attacking_basket)
+                                            attacking_basket)
             out.append(Track(
                 track_id=p.track_id, name=p.name, jersey=p.jersey,
                 xy={round(r[0], 3): (float(x), float(y)) for r, (x, y) in zip(rows, xy)},
@@ -358,13 +392,35 @@ def find_t0(tracks: list[Track], handler: dict[float, tuple[float, float]], t_st
     return None
 
 
+def _nearest_time(times, target: float, tol: float = 0.1) -> float | None:
+    """The available frame time closest to `target`, or None when none is within `tol`.
+
+    Homography failures drop about a quarter of frames, so the frame at exactly `target` often
+    does not exist; insisting on it would report every player as moving.
+    """
+    best = None
+    for t in times:
+        d = abs(t - target)
+        if d <= tol + 1e-9 and (best is None or d < abs(best - target)):
+            best = t
+    return best
+
+
 def still_players(tracks: list[Track], t: float, window_s: float = 0.5,
                    max_move_ft: float = 1.0) -> tuple[int, int]:
     """(visible, still): id-agnostic player positions at t, and how many of them also have a
-    position `window_s` earlier within `max_move_ft`, regardless of which track id it came
-    from (a track break moves the earlier position to a different Track)."""
+    position about `window_s` earlier within `max_move_ft`, regardless of which track id it came
+    from (a track break moves the earlier position to a different Track).
+
+    The lookback uses the nearest frame within 20% of `window_s` of `t - window_s`; if the
+    tracks have no frame in that band there is no history to compare against and nothing counts
+    as still.
+    """
     now = positions_at(tracks, t, max_move_ft)
-    prev = positions_at(tracks, t - window_s, max_move_ft)
+    t_prev = _nearest_time(_times(tracks), t - window_s, tol=window_s * 0.2)
+    if t_prev is None:
+        return len(now), 0
+    prev = positions_at(tracks, t_prev, max_move_ft)
     still = sum(
         1 for (x1, y1) in now
         if any(np.hypot(x1 - x0, y1 - y0) < max_move_ft for (x0, y0) in prev)
@@ -372,23 +428,42 @@ def still_players(tracks: list[Track], t: float, window_s: float = 0.5,
     return len(now), still
 
 
-def _is_still_frame(tracks: list[Track], t: float) -> bool:
-    visible, still = still_players(tracks, t)
-    return visible >= MIN_STILL_PLAYERS and still >= MIN_STILL_PLAYERS
+def frontcourt_players(tracks: list[Track], t: float, max_move_ft: float = 1.0) -> int:
+    """How many merged positions at `t` are in the frontcourt (x < 47)."""
+    return sum(1 for (x, _) in positions_at(tracks, t, max_move_ft) if x < zones.HALF_COURT_X)
+
+
+def _is_still_frame(tracks: list[Track], t: float, max_move_ft: float = 1.0,
+                     min_players: int = MIN_STILL_PLAYERS) -> bool:
+    """A candidate setup frame: enough players visible, enough of them still, and enough of them
+    in the frontcourt (a still backcourt lineup waiting to inbound is not a setup)."""
+    visible, still = still_players(tracks, t, max_move_ft=max_move_ft)
+    if visible < min_players or still < min_players:
+        return False
+    return frontcourt_players(tracks, t, max_move_ft) >= min_players
 
 
 def find_setup(tracks: list[Track], handler: dict[float, tuple[float, float]], start_type: str,
-               t_start: float, t0: float, t_end: float, fps: float = 10.0) -> tuple[float, bool]:
-    """(setup_time, no_setup) per the spec's setup-frame rule."""
+               t_start: float, t0: float, t_end: float, full_court: bool = False,
+               fps: float = 10.0, max_move_ft: float = 1.0,
+               min_players: int = MIN_STILL_PLAYERS) -> tuple[float, bool]:
+    """(setup_time, no_setup) per the spec's setup-frame rule.
+
+    The dead-ball window around `t_start` only applies to a sideline or baseline inbound in the
+    frontcourt. A `full_court` dead start (after the opponent scored) inbounds from the team's
+    own baseline, so the lineup around `t_start` is a backcourt one and the live rule from `t0`
+    is used instead.
+    """
     times = _times(tracks)
-    if start_type in (DEAD, ATO):
+    if start_type in (DEAD, ATO) and not full_court:
         lo, hi = t_start + DEAD_SEARCH[0], t_start + DEAD_SEARCH[1]
-        cands = [t for t in times if lo <= t <= hi and _is_still_frame(tracks, t)]
+        cands = [t for t in times
+                 if lo <= t <= hi and _is_still_frame(tracks, t, max_move_ft, min_players)]
         if cands:
             return cands[-1], False
     hi = min(t0 + LIVE_SEARCH_S, t_end)
     for t in times:
-        if not t0 <= t <= hi or not _is_still_frame(tracks, t):
+        if not t0 <= t <= hi or not _is_still_frame(tracks, t, max_move_ft, min_players):
             continue
         h = handler.get(round(t, 3))
         if h is not None and float(zones.rim_distance(np.array([h]))[0]) <= ARC_FT:
@@ -412,6 +487,7 @@ class HalfcourtRecord:
     index: int
     team: str
     start_type: str
+    full_court: bool = field(default=False, kw_only=True)
     terminal: str
     free_throws: bool
     clock_start: float
@@ -426,6 +502,9 @@ class HalfcourtRecord:
     outcome: str | None
     points: int
     n_visible_at_setup: int
+    # more than five merged Duke positions is impossible: the extra ones are fragmented tracks
+    # more than 1 ft apart, so the frame's positions cannot all be trusted
+    suspect_duplicates: bool = field(default=False, kw_only=True)
     players: list[dict] = field(default_factory=list)
     ball_handler: list[list[float]] = field(default_factory=list)
     events: list[dict] = field(default_factory=list)
@@ -445,7 +524,8 @@ def _bare_record(game_id: str, index: int, iv: Interval, outcome: str | None, po
     the default) or they located but no track reached the frontcourt (`located=True`, with
     `t_start`/`t_end` filled in)."""
     return HalfcourtRecord(
-        game_id=game_id, index=index, team=iv.team, start_type=iv.start_type, terminal=iv.terminal,
+        game_id=game_id, index=index, team=iv.team, start_type=iv.start_type,
+        full_court=iv.full_court, terminal=iv.terminal,
         free_throws=iv.free_throws, clock_start=iv.start_clock, clock_end=iv.end_clock,
         t_start=t_start, t_end=t_end, t0=None, setup=None, no_setup=True, transition=False,
         located=located, outcome=outcome, points=points, n_visible_at_setup=0,
@@ -458,33 +538,50 @@ def build_records(game_id: str, team: str, events: list[Event], reads,
                    period_length: float = 1200.0) -> list[HalfcourtRecord]:
     """One `HalfcourtRecord` per `team` interval in `events`, with clocks mapped to video time via
     `reads` and player/ball-handler data gathered from `possessions` where a track reached the
-    frontcourt."""
+    frontcourt.
+
+    `possessions` must cover the period `events` belongs to: their video span restricts the
+    scoreboard reads a clock may map to, and the majority attacking basket over `team`'s own
+    possessions fixes the mirroring for every `team` track, including tracks read out of the
+    opponent's possessions.
+    """
     out: list[HalfcourtRecord] = []
+    attacking_basket = attack_direction(possessions, team) if possessions else "left"
+    t_lo = min((p.start_time for p in possessions), default=None)
+    t_hi = max((p.end_time for p in possessions), default=None)
+    if t_lo is not None and t_hi is not None:
+        t_lo, t_hi = t_lo - 5.0, t_hi + 5.0
     for index, iv in enumerate(i for i in intervals(events, period_length) if i.team == team):
         outcome, points = derive_outcome(iv.events, team)
         start_mode = "first" if iv.start_type == LIVE else "last"
-        t_start = clock_to_video(reads, iv.start_clock, start_mode)
-        t_end = clock_to_video(reads, iv.end_clock, "first")
+        t_start = clock_to_video(reads, iv.start_clock, start_mode, t_lo=t_lo, t_hi=t_hi)
+        t_end = clock_to_video(reads, iv.end_clock, "first", t_lo=t_lo, t_hi=t_hi)
         if t_start is None or t_end is None or t_end <= t_start:
             out.append(_bare_record(game_id, index, iv, outcome, points))
             continue
         t_end = round(t_end + 0.5, 2)  # the read at the terminal clock precedes the event by 1 s
-        tracks = gather_tracks(possessions, team, t_start - 3.0, t_end)
+        tracks = gather_tracks(possessions, team, t_start - 3.0, t_end, attacking_basket)
         handler = ball_handler_series(tracks)
         t0 = find_t0(tracks, handler, t_start - 1.0, t_end)
         if t0 is None:
             out.append(_bare_record(game_id, index, iv, outcome, points,
                                      t_start=t_start, t_end=t_end, located=True))
             continue
-        setup, no_setup = find_setup(tracks, handler, iv.start_type, t_start, t0, t_end)
+        if iv.start_type == LIVE:
+            # find_t0 searches from a second before the interval opens; a live possession cannot
+            # start before its own first event
+            t0 = max(t0, t_start)
+        setup, no_setup = find_setup(tracks, handler, iv.start_type, t_start, t0, t_end,
+                                      full_court=iv.full_court)
         transition = iv.start_type == LIVE and (t_end - t0) < TRANSITION_S
         visible, _ = still_players(tracks, setup)
         out.append(HalfcourtRecord(
-            game_id=game_id, index=index, team=team, start_type=iv.start_type, terminal=iv.terminal,
+            game_id=game_id, index=index, team=team, start_type=iv.start_type,
+            full_court=iv.full_court, terminal=iv.terminal,
             free_throws=iv.free_throws, clock_start=iv.start_clock, clock_end=iv.end_clock,
             t_start=t_start, t_end=t_end, t0=t0, setup=setup, no_setup=no_setup,
             transition=transition, located=True, outcome=outcome, points=points,
-            n_visible_at_setup=visible,
+            n_visible_at_setup=visible, suspect_duplicates=visible > 5,
             players=[{"track_id": tr.track_id, "name": tr.name, "jersey": tr.jersey,
                       "trajectory": [[t, round(x, 2), round(y, 2)]
                                      for t, (x, y) in sorted(tr.xy.items())]}

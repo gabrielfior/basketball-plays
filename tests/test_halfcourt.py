@@ -1,5 +1,3 @@
-import numpy as np
-
 from basketball_plays import halfcourt as H
 from basketball_plays.playbyplay import Event
 from basketball_plays.schema import PlayerTrack, Possession
@@ -228,7 +226,8 @@ def make_possession(players, basket="left", pid=0, t0=100.0, t1=120.0):
 
 
 def test_gather_tracks_mirrors_right_basket_and_filters_team_and_window():
-    duke = PlayerTrack(1, "Duke", "12", "Cameron Boozer", traj(100.0, 50, 70.0, 10.0), [], holding=[101.0])
+    duke = PlayerTrack(1, "Duke", "12", "Cameron Boozer", traj(100.0, 50, 70.0, 10.0), [],
+                       holding=[101.0])
     mich = PlayerTrack(2, "Michigan", None, None, traj(100.0, 50, 60.0, 10.0), [])
     pos = make_possession([duke, mich], basket="right")
     tracks = H.gather_tracks([pos], "Duke", 100.5, 102.0)
@@ -241,9 +240,11 @@ def test_gather_tracks_mirrors_right_basket_and_filters_team_and_window():
 
 def test_gather_tracks_spans_two_vision_possessions_and_skips_nan():
     a = PlayerTrack(1, "Duke", None, None, traj(100.0, 20, 30.0, 10.0), [])
-    b = PlayerTrack(5, "Duke", None, None, [[102.0, float("nan"), float("nan")], [102.1, 31.0, 10.0]], [])
-    tracks = H.gather_tracks([make_possession([a], t0=100, t1=102), make_possession([b], pid=1, t0=102, t1=103)],
-                             "Duke", 100.0, 103.0)
+    b = PlayerTrack(5, "Duke", None, None,
+                    [[102.0, float("nan"), float("nan")], [102.1, 31.0, 10.0]], [])
+    tracks = H.gather_tracks(
+        [make_possession([a], t0=100, t1=102), make_possession([b], pid=1, t0=102, t1=103)],
+        "Duke", 100.0, 103.0)
     assert sorted(t.track_id for t in tracks) == [1, 5]
     assert 102.0 not in next(t for t in tracks if t.track_id == 5).xy
 
@@ -260,7 +261,8 @@ def test_find_t0_is_when_the_handler_crosses_half_court():
 
 
 def test_find_t0_falls_back_to_the_team_centroid():
-    tracks = [H.Track(i, None, None, {100.0: (60.0, 10.0 * i), 100.5: (30.0, 10.0 * i)}, set()) for i in range(1, 4)]
+    tracks = [H.Track(i, None, None, {100.0: (60.0, 10.0 * i), 100.5: (30.0, 10.0 * i)}, set())
+              for i in range(1, 4)]
     assert H.find_t0(tracks, {}, 100.0, 110.0) == 100.5
     assert H.find_t0(tracks[:2], {}, 100.0, 110.0) is None   # fewer than three players visible
 
@@ -278,6 +280,20 @@ def test_still_players_counts_visible_and_still():
     assert H.still_players(_still_tracks(100.0, 10), 100.9) == (5, 5)
     assert H.still_players(_still_tracks(100.0, 10, moving=True), 100.9) == (5, 0)
     assert H.still_players(_still_tracks(100.0, 10), 100.2) == (5, 0)   # not enough history yet
+
+
+def test_still_players_ignores_a_duplicate_track_id_for_the_same_player():
+    tracks = _still_tracks(100.0, 10)
+    dup = H.Track(99, None, None, dict(tracks[0].xy), set())  # same player, a second track id
+    assert H.still_players(tracks + [dup], 100.9) == (5, 5)
+
+
+def test_still_players_survives_a_track_break():
+    others = _still_tracks(100.0, 20)[1:]  # players 1..4, still from 100.0 to 101.9
+    rows = traj(100.0, 20, 20.0, 5.0, dx=0.0)  # player 0, stationary
+    a = H.Track(0, None, None, {r[0]: (r[1], r[2]) for r in rows if r[0] <= 100.4}, set())
+    b = H.Track(50, None, None, {r[0]: (r[1], r[2]) for r in rows if r[0] >= 100.5}, set())
+    assert H.still_players([a, b] + others, 100.9) == (5, 5)
 
 
 def test_find_setup_dead_ball_takes_the_last_still_frame_before_the_inbound():

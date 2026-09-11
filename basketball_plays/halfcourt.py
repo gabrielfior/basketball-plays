@@ -322,6 +322,23 @@ def _times(tracks: list[Track]) -> list[float]:
     return sorted({t for tr in tracks for t in tr.xy})
 
 
+def positions_at(tracks: list[Track], t: float,
+                  max_move_ft: float = 1.0) -> list[tuple[float, float]]:
+    """Every track's position at rounded time `t`, id-agnostic: a second track id sitting
+    within `max_move_ft` of an already-kept position (the same player, fragmented into two
+    track ids) is treated as a duplicate and dropped rather than counted twice."""
+    t = round(t, 3)
+    out: list[tuple[float, float]] = []
+    for tr in tracks:
+        p = tr.xy.get(t)
+        if p is None:
+            continue
+        if any(np.hypot(p[0] - q[0], p[1] - q[1]) < max_move_ft for q in out):
+            continue
+        out.append(p)
+    return out
+
+
 def find_t0(tracks: list[Track], handler: dict[float, tuple[float, float]], t_start: float,
             t_end: float, fps: float = 10.0) -> float | None:
     """First time the ball handler is in the frontcourt; else the first time at least three
@@ -332,28 +349,26 @@ def find_t0(tracks: list[Track], handler: dict[float, tuple[float, float]], t_st
     for t in _times(tracks):
         if not t_start <= t <= t_end:
             continue
-        xs = [tr.xy[t][0] for tr in tracks if t in tr.xy]
-        if len(xs) >= MIN_CENTROID_PLAYERS and float(np.median(xs)) < zones.HALF_COURT_X:
+        positions = positions_at(tracks, t)
+        if len(positions) < MIN_CENTROID_PLAYERS:
+            continue
+        if float(np.median([p[0] for p in positions])) < zones.HALF_COURT_X:
             return t
     return None
 
 
 def still_players(tracks: list[Track], t: float, window_s: float = 0.5,
                    max_move_ft: float = 1.0) -> tuple[int, int]:
-    """(visible, still): players with a position at t, and those who also have a position
-    `window_s` earlier within `max_move_ft` of it."""
-    t = round(t, 3)
-    t_prev = round(t - window_s, 3)
-    visible = still = 0
-    for tr in tracks:
-        if t not in tr.xy:
-            continue
-        visible += 1
-        if t_prev in tr.xy:
-            (x0, y0), (x1, y1) = tr.xy[t_prev], tr.xy[t]
-            if np.hypot(x1 - x0, y1 - y0) < max_move_ft:
-                still += 1
-    return visible, still
+    """(visible, still): id-agnostic player positions at t, and how many of them also have a
+    position `window_s` earlier within `max_move_ft`, regardless of which track id it came
+    from (a track break moves the earlier position to a different Track)."""
+    now = positions_at(tracks, t, max_move_ft)
+    prev = positions_at(tracks, t - window_s, max_move_ft)
+    still = sum(
+        1 for (x1, y1) in now
+        if any(np.hypot(x1 - x0, y1 - y0) < max_move_ft for (x0, y0) in prev)
+    )
+    return len(now), still
 
 
 def _is_still_frame(tracks: list[Track], t: float) -> bool:

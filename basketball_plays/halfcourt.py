@@ -6,7 +6,11 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
+import numpy as np
+
+from basketball_plays import zones
 from basketball_plays.playbyplay import Event
+from basketball_plays.schema import Possession
 
 ATO, DEAD, LIVE, PERIOD = "ato", "dead", "live", "period"
 SHOT, TURNOVER, FOUL, STOPPAGE, PERIOD_END = "shot", "turnover", "foul", "stoppage", "period_end"
@@ -261,3 +265,117 @@ def clock_to_video(reads, clock: float, mode: str,
         return None
     frac = (c_hi - clock) / (c_hi - c_lo)
     return round(float(t_hi + frac * (t_lo - t_hi)), 2)
+
+
+MIN_STILL_PLAYERS = 4
+ARC_FT = 22.0
+TRANSITION_S = 6.0
+DEAD_SEARCH = (-3.0, 1.5)
+LIVE_SEARCH_S = 6.0
+MIN_CENTROID_PLAYERS = 3
+
+
+@dataclass
+class Track:
+    track_id: int
+    name: str | None
+    jersey: str | None
+    xy: dict[float, tuple[float, float]]  # rounded video time -> canonical court position
+    holding: set[float]
+
+
+def gather_tracks(possessions: list[Possession], team: str, t_start: float,
+                   t_end: float) -> list[Track]:
+    """Every `team` track from any vision possession overlapping [t_start, t_end], clipped to
+    the window, mirrored so the offence attacks x = 5.25. NaN positions are dropped."""
+    out: list[Track] = []
+    for pos in possessions:
+        if pos.end_time < t_start or pos.start_time > t_end:
+            continue
+        for p in pos.players:
+            if p.team != team:
+                continue
+            rows = [r for r in p.trajectory
+                    if t_start <= r[0] <= t_end and np.isfinite(r[1]) and np.isfinite(r[2])]
+            if not rows:
+                continue
+            xy = zones.mirror_to_canonical(np.array([[r[1], r[2]] for r in rows]),
+                                            pos.attacking_basket)
+            out.append(Track(
+                track_id=p.track_id, name=p.name, jersey=p.jersey,
+                xy={round(r[0], 3): (float(x), float(y)) for r, (x, y) in zip(rows, xy)},
+                holding={round(h, 3) for h in p.holding if t_start <= h <= t_end},
+            ))
+    return out
+
+
+def ball_handler_series(tracks: list[Track]) -> dict[float, tuple[float, float]]:
+    out: dict[float, tuple[float, float]] = {}
+    for tr in tracks:
+        for t in tr.holding:
+            if t in tr.xy and t not in out:
+                out[t] = tr.xy[t]
+    return dict(sorted(out.items()))
+
+
+def _times(tracks: list[Track]) -> list[float]:
+    return sorted({t for tr in tracks for t in tr.xy})
+
+
+def find_t0(tracks: list[Track], handler: dict[float, tuple[float, float]], t_start: float,
+            t_end: float, fps: float = 10.0) -> float | None:
+    """First time the ball handler is in the frontcourt; else the first time at least three
+    visible players have their median x in the frontcourt."""
+    for t, (x, _) in sorted(handler.items()):
+        if t_start <= t <= t_end and x < zones.HALF_COURT_X:
+            return t
+    for t in _times(tracks):
+        if not t_start <= t <= t_end:
+            continue
+        xs = [tr.xy[t][0] for tr in tracks if t in tr.xy]
+        if len(xs) >= MIN_CENTROID_PLAYERS and float(np.median(xs)) < zones.HALF_COURT_X:
+            return t
+    return None
+
+
+def still_players(tracks: list[Track], t: float, window_s: float = 0.5,
+                   max_move_ft: float = 1.0) -> tuple[int, int]:
+    """(visible, still): players with a position at t, and those who also have a position
+    `window_s` earlier within `max_move_ft` of it."""
+    t = round(t, 3)
+    t_prev = round(t - window_s, 3)
+    visible = still = 0
+    for tr in tracks:
+        if t not in tr.xy:
+            continue
+        visible += 1
+        if t_prev in tr.xy:
+            (x0, y0), (x1, y1) = tr.xy[t_prev], tr.xy[t]
+            if np.hypot(x1 - x0, y1 - y0) < max_move_ft:
+                still += 1
+    return visible, still
+
+
+def _is_still_frame(tracks: list[Track], t: float) -> bool:
+    visible, still = still_players(tracks, t)
+    return visible >= MIN_STILL_PLAYERS and still >= MIN_STILL_PLAYERS
+
+
+def find_setup(tracks: list[Track], handler: dict[float, tuple[float, float]], start_type: str,
+               t_start: float, t0: float, t_end: float, fps: float = 10.0) -> tuple[float, bool]:
+    """(setup_time, no_setup) per the spec's setup-frame rule."""
+    times = _times(tracks)
+    if start_type in (DEAD, ATO):
+        lo, hi = t_start + DEAD_SEARCH[0], t_start + DEAD_SEARCH[1]
+        cands = [t for t in times if lo <= t <= hi and _is_still_frame(tracks, t)]
+        if cands:
+            return cands[-1], False
+    hi = min(t0 + LIVE_SEARCH_S, t_end)
+    for t in times:
+        if not t0 <= t <= hi or not _is_still_frame(tracks, t):
+            continue
+        h = handler.get(round(t, 3))
+        if h is not None and float(zones.rim_distance(np.array([h]))[0]) <= ARC_FT:
+            continue
+        return t, False
+    return t0, True

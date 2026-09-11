@@ -1,5 +1,8 @@
+import numpy as np
+
 from basketball_plays import halfcourt as H
 from basketball_plays.playbyplay import Event
+from basketball_plays.schema import PlayerTrack, Possession
 from basketball_plays.scoreboard import ScoreboardRead
 
 D, M = "Duke", "Michigan"
@@ -213,3 +216,88 @@ def test_clock_to_video_outside_the_timeline_is_none():
     rs = reads([(10, 1000), (11, 999)])
     assert H.clock_to_video(rs, 1100, "first") is None
     assert H.clock_to_video(rs, 900, "last") is None
+
+
+def traj(t_start, n, x, y, dx=0.0, dy=0.0, fps=10.0):
+    """[t, x, y] rows moving by (dx, dy) ft per frame."""
+    return [[round(t_start + k / fps, 3), x + k * dx, y + k * dy] for k in range(n)]
+
+
+def make_possession(players, basket="left", pid=0, t0=100.0, t1=120.0):
+    return Possession(pid, t0, t1, 10.0, "Duke", basket, players, [])
+
+
+def test_gather_tracks_mirrors_right_basket_and_filters_team_and_window():
+    duke = PlayerTrack(1, "Duke", "12", "Cameron Boozer", traj(100.0, 50, 70.0, 10.0), [], holding=[101.0])
+    mich = PlayerTrack(2, "Michigan", None, None, traj(100.0, 50, 60.0, 10.0), [])
+    pos = make_possession([duke, mich], basket="right")
+    tracks = H.gather_tracks([pos], "Duke", 100.5, 102.0)
+    assert [t.track_id for t in tracks] == [1]
+    assert min(tracks[0].xy) == 100.5 and max(tracks[0].xy) == 102.0
+    assert tracks[0].xy[100.5] == (24.0, 10.0)          # 94 - 70
+    assert tracks[0].holding == {101.0}
+    assert tracks[0].name == "Cameron Boozer"
+
+
+def test_gather_tracks_spans_two_vision_possessions_and_skips_nan():
+    a = PlayerTrack(1, "Duke", None, None, traj(100.0, 20, 30.0, 10.0), [])
+    b = PlayerTrack(5, "Duke", None, None, [[102.0, float("nan"), float("nan")], [102.1, 31.0, 10.0]], [])
+    tracks = H.gather_tracks([make_possession([a], t0=100, t1=102), make_possession([b], pid=1, t0=102, t1=103)],
+                             "Duke", 100.0, 103.0)
+    assert sorted(t.track_id for t in tracks) == [1, 5]
+    assert 102.0 not in next(t for t in tracks if t.track_id == 5).xy
+
+
+def test_ball_handler_series_uses_holding_times():
+    a = H.Track(1, None, None, {100.0: (60.0, 25.0), 100.1: (58.0, 25.0)}, {100.1})
+    b = H.Track(2, None, None, {100.0: (40.0, 25.0)}, {100.0})
+    assert H.ball_handler_series([a, b]) == {100.0: (40.0, 25.0), 100.1: (58.0, 25.0)}
+
+
+def test_find_t0_is_when_the_handler_crosses_half_court():
+    handler = {100.0: (60.0, 25.0), 100.1: (50.0, 25.0), 100.2: (46.0, 25.0), 100.3: (40.0, 25.0)}
+    assert H.find_t0([], handler, 100.0, 110.0) == 100.2
+
+
+def test_find_t0_falls_back_to_the_team_centroid():
+    tracks = [H.Track(i, None, None, {100.0: (60.0, 10.0 * i), 100.5: (30.0, 10.0 * i)}, set()) for i in range(1, 4)]
+    assert H.find_t0(tracks, {}, 100.0, 110.0) == 100.5
+    assert H.find_t0(tracks[:2], {}, 100.0, 110.0) is None   # fewer than three players visible
+
+
+def _still_tracks(t_start, n_frames, moving=False, n=5):
+    out = []
+    for i in range(n):
+        dx = 0.4 if moving else 0.02  # 4 ft/s vs 0.2 ft/s
+        rows = traj(t_start, n_frames, 20.0 + 3 * i, 5.0 + 8 * i, dx=dx)
+        out.append(H.Track(i, None, None, {r[0]: (r[1], r[2]) for r in rows}, set()))
+    return out
+
+
+def test_still_players_counts_visible_and_still():
+    assert H.still_players(_still_tracks(100.0, 10), 100.9) == (5, 5)
+    assert H.still_players(_still_tracks(100.0, 10, moving=True), 100.9) == (5, 0)
+    assert H.still_players(_still_tracks(100.0, 10), 100.2) == (5, 0)   # not enough history yet
+
+
+def test_find_setup_dead_ball_takes_the_last_still_frame_before_the_inbound():
+    tracks = _still_tracks(96.0, 60)  # still from 96.0 to 101.9
+    setup, no_setup = H.find_setup(tracks, {}, "dead", t_start=100.0, t0=100.4, t_end=115.0)
+    assert (setup, no_setup) == (101.5, False)   # end of the [t_start - 3, t_start + 1.5] search
+
+
+def test_find_setup_live_takes_the_first_still_frame_with_handler_beyond_the_arc():
+    moving = _still_tracks(100.0, 20, moving=True)          # 100.0 .. 101.9 moving
+    still = _still_tracks(102.0, 40)                        # 102.0 .. 105.9 still
+    tracks = [H.Track(i, None, None, {**moving[i].xy, **still[i].xy}, set()) for i in range(5)]
+    handler = {t: (30.0, 25.0) for t in still[0].xy}        # 24.75 ft from the rim
+    setup, no_setup = H.find_setup(tracks, handler, "live", t_start=99.0, t0=100.0, t_end=115.0)
+    assert (setup, no_setup) == (102.5, False)
+    inside = {t: (12.0, 25.0) for t in still[0].xy}
+    assert H.find_setup(tracks, inside, "live", 99.0, 100.0, 115.0) == (100.0, True)
+
+
+def test_find_setup_without_a_still_frame_flags_no_setup():
+    tracks = _still_tracks(100.0, 60, moving=True)
+    assert H.find_setup(tracks, {}, "live", 99.0, 100.0, 115.0) == (100.0, True)
+    assert H.find_setup(tracks, {}, "ato", 99.0, 100.0, 115.0) == (100.0, True)

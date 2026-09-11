@@ -65,10 +65,13 @@ mkdir -p data && uvx yt-dlp -f "bestvideo[height<=720][ext=mp4][vcodec^=avc1]+be
    Duke half-court possessions from ESPN intervals, setup frames and a montage of setup snapshots.
 
    ```bash
-   uv run python scripts/spike_setups.py data/trajectories.jsonl --out data/plays/spike
+   uv run python scripts/spike_setups.py data/trajectories.jsonl --out data/plays/spike \
+       --sensitivity
    ```
 
    Writes `halfcourt.jsonl`, `setups.png` and `report.md` with the go/no-go numbers.
+   `--sensitivity` appends a setup-rate table over stillness thresholds (max move in feet by
+   minimum players), which is how the 1 ft spec value gets checked against measured jitter.
 
 ## Output format: `trajectories.jsonl`
 

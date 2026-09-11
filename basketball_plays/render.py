@@ -21,10 +21,18 @@ def team_color(team: str | None) -> tuple[int, int, int]:
     return TEAM_BGR.get(team, TEAM_BGR[None])
 
 
+SUFFIXES = {"jr.", "jr", "sr.", "sr", "ii", "iii", "iv"}
+
+
+def surname(name: str) -> str:
+    parts = [p for p in name.split() if p.lower() not in SUFFIXES]
+    return parts[-1] if parts else name
+
+
 def label_for(team: str | None, jersey: str | None, name: str | None, track_id: int) -> str:
     short = (team or "?")[:3].upper()
     if name:
-        return f"{short} #{jersey} {name.split()[-1]}"
+        return f"{short} #{jersey} {surname(name)}"
     if jersey:
         return f"{short} #{jersey}"
     return f"{short} id{track_id}"

@@ -39,6 +39,8 @@ def test_draw_overlay_draws_box():
     assert out[200, 105].any()  # top edge of the box at x=105
     assert render.label_for(DUKE, "12", "Cameron Boozer", 1) == "DUK #12 Boozer"
     assert render.label_for(MICHIGAN, None, None, 7) == "MIC id7"
+    assert render.label_for(MICHIGAN, "21", "Morez Johnson Jr.", 2) == "MIC #21 Johnson"
+    assert render.label_for(DUKE, "21", "Patrick Ngongba II", 3) == "DUK #21 Ngongba"
 
 
 def test_video_writer_roundtrip(tmp_path):

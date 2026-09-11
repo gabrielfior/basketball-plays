@@ -75,6 +75,15 @@ class Possession:
     attacking_basket: str  # "left" or "right" in court coordinates
     players: list[PlayerTrack]
     ball: list[list[float]]  # [t, x, y]
+    # outcome annotation (scripts/annotate_outcomes.py); None until annotated
+    clock_start: float | None = None  # game clock seconds remaining at start_time
+    clock_end: float | None = None
+    score_before: dict[str, int] | None = None  # {"Michigan": 8, "Duke": 5}
+    score_after: dict[str, int] | None = None
+    points_scored: int | None = None  # offense points from play-by-play events
+    scoreboard_points: int | None = None  # offense points from the scoreboard delta, for cross-checking
+    outcome: str | None = None  # made_2, made_3, missed_2, missed_3, free_throws, turnover, foul
+    events: list[dict] | None = None  # play-by-play events inside the possession's clock window
 
     def to_json(self) -> str:
         return json.dumps(asdict(self), separators=(",", ":"))

@@ -39,6 +39,15 @@ mkdir -p data && uvx yt-dlp -f "bestvideo[height<=720][ext=mp4][vcodec^=avc1]+be
    uv run python scripts/overlay_video.py data/duke_michigan_q1.mp4 data/trajectories.jsonl --n 5 --out data/overlay.mp4
    ```
 
+4. Attach game clock, score and play-by-play outcome to every possession (needs `tesseract` on the
+   PATH, `brew install tesseract`; the ESPN summary is fetched once and cached in `data/`):
+
+   ```bash
+   uv run python scripts/annotate_outcomes.py data/duke_michigan_q1.mp4 data/trajectories.jsonl
+   # reuse the scoreboard OCR from a previous run:
+   uv run python scripts/annotate_outcomes.py data/duke_michigan_q1.mp4 data/trajectories.jsonl --skip-ocr
+   ```
+
 ## Output format: `trajectories.jsonl`
 
 One JSON object per possession:
@@ -57,6 +66,26 @@ One JSON object per possession:
 - `boxes` rows are `[video_time_s, x1, y1, x2, y2]` in source pixels.
 - `jersey` and `name` are best-effort from jersey OCR matched against the ESPN rosters; `null`
   when there were not enough consistent reads.
+
+After `annotate_outcomes.py` each possession also carries:
+
+```json
+{"clock_start": 1194.0, "clock_end": 1169.0,
+ "score_before": {"Michigan": 0, "Duke": 0}, "score_after": {"Michigan": 2, "Duke": 0},
+ "points_scored": 2, "scoreboard_points": 2, "outcome": "made_2",
+ "events": [{"clock_text": "19:32", "team": "Michigan", "type": "DunkShot",
+             "text": "Aday Mara makes 3-foot alley oop dunk", "scoring": true, "score_value": 2, ...}]}
+```
+
+- `clock_start` and `clock_end` are game-clock seconds remaining, read from the broadcast
+  scoreboard with tesseract once per second; `score_before` and `score_after` come from the same
+  OCR, validated against the score sequence in ESPN's play-by-play.
+- `events` are the ESPN plays whose clock falls inside the possession, each assigned to exactly
+  one possession (a shot on a shared boundary goes to the earlier possession, a foul or free throw
+  to the later one). `outcome` is derived from the offense's events: `made_2`, `made_3`,
+  `missed_2`, `missed_3`, `free_throws`, `turnover`, `foul`, or `null` when no event fell inside
+  the window (dead-ball stretches). `points_scored` sums ESPN scoring plays; `scoreboard_points`
+  is the OCR score delta for the same team, kept as a cross-check.
 
 ## How it works
 
@@ -83,6 +112,9 @@ under a minute and can be re-run with `--skip-gpu` after changing thresholds.
 | Possessions | 80 (1,411 s of play) |
 | Player tracks | 1,291, median 6.8 s, 602 with a jersey number and name |
 | Team clustering | cluster 0 = Michigan, cluster 1 = Duke, confirmed by OCR reads |
+| Clock window resolved | 80 of 80 possessions |
+| Outcomes | 19 made 2, 7 made 3, 7 missed 2, 16 missed 3, 11 turnovers, 9 free-throw trips, 2 fouls, 9 unlabelled |
+| ESPN points vs scoreboard delta | 73 agree, 3 disagree (scoreboard graphic lags the play) |
 
 Known limitations, in order of impact:
 
@@ -95,6 +127,9 @@ Known limitations, in order of impact:
   ESPN's play-by-play implies about 58 possessions for the half versus 80 detected.
 - The ball position is a ground projection of an airborne object and is missing in about half
   of the frames.
+- Possession outcomes depend on the OCR'd clock: with a 1 s clock resolution, several dead-ball
+  segments at the same clock (a free-throw sequence) cannot be told apart, so the free throws land
+  on one of them. A vision-only made/miss detector is described in `docs/backlog/vision-outcomes.md`.
 - Jersey OCR at 720p misreads similar digits (2 vs 21, 3 vs 23); a number needs two agreeing
   reads on the team's roster, and concurrent duplicates on one team keep only the stronger vote.
 

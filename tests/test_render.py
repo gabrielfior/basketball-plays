@@ -49,3 +49,12 @@ def test_video_writer_roundtrip(tmp_path):
         w.write(np.zeros((32, 64, 3), dtype=np.uint8))
     w.close()
     assert (tmp_path / "x.mp4").stat().st_size > 0
+
+
+def test_clock_text_and_outcome_header():
+    assert render.clock_text(1187) == "19:47"
+    assert render.clock_text(45.3) == "45.3"
+    pos = sample_possession()
+    pos.clock_start, pos.outcome, pos.points_scored = 1187.0, "made_3", 3
+    img = render.render_court_frame(pos, 0.5, scale=10, padding=30, header=44)
+    assert img.shape[0] == 44 + 500 + 60  # header still one bar

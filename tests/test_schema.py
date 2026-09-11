@@ -25,3 +25,19 @@ def test_possession_roundtrip(tmp_path):
     p = tmp_path / "trajectories.jsonl"
     schema.write_jsonl(p, [pos])
     assert schema.read_possessions(p) == [pos]
+
+
+def test_possession_roundtrip_with_outcome_fields(tmp_path):
+    pos = schema.Possession(
+        possession_id=1, start_time=1.0, end_time=4.0, fps=10, offense_team="Duke", attacking_basket="left",
+        players=[], ball=[], clock_start=1187.0, clock_end=1170.0, score_before={"Michigan": 0, "Duke": 0},
+        score_after={"Michigan": 0, "Duke": 3}, points_scored=3, scoreboard_points=3, outcome="made_3",
+        events=[{"clock_text": "19:40", "text": "x makes three"}],
+    )
+    p = tmp_path / "t.jsonl"
+    schema.write_jsonl(p, [pos])
+    assert schema.read_possessions(p) == [pos]
+    # old files without the fields still load
+    old = schema.Possession(possession_id=0, start_time=0, end_time=1, fps=10, offense_team=None,
+                            attacking_basket="right", players=[], ball=[])
+    assert old.outcome is None

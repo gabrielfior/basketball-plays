@@ -38,6 +38,12 @@ def label_for(team: str | None, jersey: str | None, name: str | None, track_id: 
     return f"{short} id{track_id}"
 
 
+def clock_text(seconds: float) -> str:
+    if seconds >= 60:
+        return f"{int(seconds // 60)}:{int(seconds % 60):02d}"
+    return f"{seconds:.1f}"
+
+
 def _index_by_time(rows: list[list[float]]) -> dict[float, list[float]]:
     return {round(r[0], 3): r[1:] for r in rows}
 
@@ -77,6 +83,10 @@ def render_court_frame(
     off = pos.offense_team or "?"
     txt = (f"Possession {pos.possession_id}  |  {off} offense -> {pos.attacking_basket} basket  |  "
            f"video {pos.start_time:7.1f}s - {pos.end_time:7.1f}s  |  t={t:7.1f}s")
+    if pos.clock_start is not None:
+        txt += f"  |  clock {clock_text(pos.clock_start)}"
+    if pos.outcome:
+        txt += f"  |  {pos.outcome.replace('_', ' ')}" + (f" (+{pos.points_scored})" if pos.points_scored else "")
     cv2.putText(bar, txt, (12, header - 15), cv2.FONT_HERSHEY_SIMPLEX, 0.55, TEXT_BGR, 1, cv2.LINE_AA)
     return np.vstack([bar, court])
 

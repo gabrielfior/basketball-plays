@@ -39,6 +39,12 @@ mkdir -p data && uvx yt-dlp -f "bestvideo[height<=720][ext=mp4][vcodec^=avc1]+be
    uv run python scripts/overlay_video.py data/duke_michigan_q1.mp4 data/trajectories.jsonl --n 5 --out data/overlay.mp4
    ```
 
+   Both renderers accept `--n 0` for all possessions and `--split-dir data/clips/...` to also write
+   one clip per possession, named `p<id>_<video start>s_<offense>_<outcome>.mp4`. Play-by-play
+   events appear as banners at the moment they happen (made or missed shot, foul, turnover,
+   rebound), with a coloured ring or box around the player named in the event when that player
+   was identified.
+
 4. Attach game clock, score and play-by-play outcome to every possession (needs `tesseract` on the
    PATH, `brew install tesseract`; the ESPN summary is fetched once and cached in `data/`):
 
@@ -46,6 +52,13 @@ mkdir -p data && uvx yt-dlp -f "bestvideo[height<=720][ext=mp4][vcodec^=avc1]+be
    uv run python scripts/annotate_outcomes.py data/duke_michigan_q1.mp4 data/trajectories.jsonl
    # reuse the scoreboard OCR from a previous run:
    uv run python scripts/annotate_outcomes.py data/duke_michigan_q1.mp4 data/trajectories.jsonl --skip-ocr
+   ```
+
+5. A CSV for reviewing cases, one row per possession with clock, score, outcome, events, named
+   players and the clip file name:
+
+   ```bash
+   uv run python scripts/summarize_possessions.py data/trajectories.jsonl --out data/possessions.csv
    ```
 
 ## Output format: `trajectories.jsonl`
@@ -80,8 +93,9 @@ After `annotate_outcomes.py` each possession also carries:
 - `clock_start` and `clock_end` are game-clock seconds remaining, read from the broadcast
   scoreboard with tesseract once per second; `score_before` and `score_after` come from the same
   OCR, validated against the score sequence in ESPN's play-by-play.
-- `events` are the ESPN plays whose clock falls inside the possession, each assigned to exactly
-  one possession (a shot on a shared boundary goes to the earlier possession, a foul or free throw
+- `events` are the ESPN plays whose clock falls inside the possession, each with `t` (video
+  seconds, from the scoreboard read that showed the event's clock) and `player` (roster name in
+  the text), each assigned to exactly one possession (a shot on a shared boundary goes to the earlier possession, a foul or free throw
   to the later one). `outcome` is derived from the offense's events: `made_2`, `made_3`,
   `missed_2`, `missed_3`, `free_throws`, `turnover`, `foul`, or `null` when no event fell inside
   the window (dead-ball stretches). `points_scored` sums ESPN scoring plays; `scoreboard_points`

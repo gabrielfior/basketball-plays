@@ -469,3 +469,14 @@ def test_build_records_located_without_a_track_reaching_the_frontcourt():
     assert r.players == [] and r.ball_handler == []
     assert r.outcome == "missed_3"
     assert r.n_visible_at_setup == 0
+
+
+def test_default_stillness_threshold_is_one_and_a_half_feet():
+    # 1.2 ft over 0.5 s is above the 1 ft merge radius but under the 1.5 ft stillness threshold
+    assert H.STILL_FT == 1.5 and H.MERGE_FT == 1.0
+    tracks = []
+    for i in range(5):
+        rows = traj(100.0, 10, 20.0 + 3 * i, 5.0 + 8 * i, dx=0.24)  # 0.24 ft/frame = 1.2 ft/0.5 s
+        tracks.append(H.Track(i, None, None, {r[0]: (r[1], r[2]) for r in rows}, set()))
+    assert H.still_players(tracks, 100.9) == (5, 5)
+    assert H.still_players(tracks, 100.9, max_move_ft=1.0) == (5, 0)

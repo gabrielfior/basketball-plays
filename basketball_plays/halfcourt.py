@@ -283,6 +283,8 @@ def clock_to_video(reads, clock: float, mode: str,
 
 
 MIN_STILL_PLAYERS = 4
+STILL_FT = 1.5  # a player is still when it moved less than this over 0.5 s (jitter floor ~0.6 ft)
+MERGE_FT = 1.0  # two track ids within this distance at one instant are the same player
 ARC_FT = 22.0
 TRANSITION_S = 6.0
 DEAD_SEARCH = (-3.0, 1.5)
@@ -358,7 +360,7 @@ def _times(tracks: list[Track]) -> list[float]:
 
 
 def positions_at(tracks: list[Track], t: float,
-                  max_move_ft: float = 1.0) -> list[tuple[float, float]]:
+                  max_move_ft: float = MERGE_FT) -> list[tuple[float, float]]:
     """Every track's position at rounded time `t`, id-agnostic: a second track id sitting
     within `max_move_ft` of an already-kept position (the same player, fragmented into two
     track ids) is treated as a duplicate and dropped rather than counted twice."""
@@ -407,7 +409,7 @@ def _nearest_time(times, target: float, tol: float = 0.1) -> float | None:
 
 
 def still_players(tracks: list[Track], t: float, window_s: float = 0.5,
-                   max_move_ft: float = 1.0) -> tuple[int, int]:
+                   max_move_ft: float = STILL_FT) -> tuple[int, int]:
     """(visible, still): id-agnostic player positions at t, and how many of them also have a
     position about `window_s` earlier within `max_move_ft`, regardless of which track id it came
     from (a track break moves the earlier position to a different Track).
@@ -416,11 +418,11 @@ def still_players(tracks: list[Track], t: float, window_s: float = 0.5,
     tracks have no frame in that band there is no history to compare against and nothing counts
     as still.
     """
-    now = positions_at(tracks, t, max_move_ft)
+    now = positions_at(tracks, t)
     t_prev = _nearest_time(_times(tracks), t - window_s, tol=window_s * 0.2)
     if t_prev is None:
         return len(now), 0
-    prev = positions_at(tracks, t_prev, max_move_ft)
+    prev = positions_at(tracks, t_prev)
     still = sum(
         1 for (x1, y1) in now
         if any(np.hypot(x1 - x0, y1 - y0) < max_move_ft for (x0, y0) in prev)
@@ -428,24 +430,24 @@ def still_players(tracks: list[Track], t: float, window_s: float = 0.5,
     return len(now), still
 
 
-def frontcourt_players(tracks: list[Track], t: float, max_move_ft: float = 1.0) -> int:
+def frontcourt_players(tracks: list[Track], t: float) -> int:
     """How many merged positions at `t` are in the frontcourt (x < 47)."""
-    return sum(1 for (x, _) in positions_at(tracks, t, max_move_ft) if x < zones.HALF_COURT_X)
+    return sum(1 for (x, _) in positions_at(tracks, t) if x < zones.HALF_COURT_X)
 
 
-def _is_still_frame(tracks: list[Track], t: float, max_move_ft: float = 1.0,
+def _is_still_frame(tracks: list[Track], t: float, max_move_ft: float = STILL_FT,
                      min_players: int = MIN_STILL_PLAYERS) -> bool:
     """A candidate setup frame: enough players visible, enough of them still, and enough of them
     in the frontcourt (a still backcourt lineup waiting to inbound is not a setup)."""
     visible, still = still_players(tracks, t, max_move_ft=max_move_ft)
     if visible < min_players or still < min_players:
         return False
-    return frontcourt_players(tracks, t, max_move_ft) >= min_players
+    return frontcourt_players(tracks, t) >= min_players
 
 
 def find_setup(tracks: list[Track], handler: dict[float, tuple[float, float]], start_type: str,
                t_start: float, t0: float, t_end: float, full_court: bool = False,
-               fps: float = 10.0, max_move_ft: float = 1.0,
+               fps: float = 10.0, max_move_ft: float = STILL_FT,
                min_players: int = MIN_STILL_PLAYERS) -> tuple[float, bool]:
     """(setup_time, no_setup) per the spec's setup-frame rule.
 

@@ -399,6 +399,15 @@ def find_setup(tracks: list[Track], handler: dict[float, tuple[float, float]], s
 
 @dataclass
 class HalfcourtRecord:
+    """One team's half-court possession, assembled from an `Interval`, the scoreboard and vision
+    tracks.
+
+    `located` is True when the interval's start/end clocks were successfully mapped to video
+    time; it does not promise player data. `t0`, `setup` and `players` may still be None/empty
+    even when `located` is True, if no `team` track ever reached the frontcourt in the window.
+    Consumers must check `t0 is not None` before using positions.
+    """
+
     game_id: str
     index: int
     team: str
@@ -429,13 +438,17 @@ class HalfcourtRecord:
         return cls(**d)
 
 
-def _unlocated(game_id: str, index: int, iv: Interval, outcome: str | None,
-               points: int) -> HalfcourtRecord:
+def _bare_record(game_id: str, index: int, iv: Interval, outcome: str | None, points: int,
+                  t_start: float | None = None, t_end: float | None = None,
+                  located: bool = False) -> HalfcourtRecord:
+    """A `HalfcourtRecord` with no track data: either the clocks never located (`located=False`,
+    the default) or they located but no track reached the frontcourt (`located=True`, with
+    `t_start`/`t_end` filled in)."""
     return HalfcourtRecord(
         game_id=game_id, index=index, team=iv.team, start_type=iv.start_type, terminal=iv.terminal,
         free_throws=iv.free_throws, clock_start=iv.start_clock, clock_end=iv.end_clock,
-        t_start=None, t_end=None, t0=None, setup=None, no_setup=True, transition=False,
-        located=False, outcome=outcome, points=points, n_visible_at_setup=0,
+        t_start=t_start, t_end=t_end, t0=None, setup=None, no_setup=True, transition=False,
+        located=located, outcome=outcome, points=points, n_visible_at_setup=0,
         events=[e.to_dict() for e in iv.events],
     )
 
@@ -443,6 +456,9 @@ def _unlocated(game_id: str, index: int, iv: Interval, outcome: str | None,
 def build_records(game_id: str, team: str, events: list[Event], reads,
                    possessions: list[Possession],
                    period_length: float = 1200.0) -> list[HalfcourtRecord]:
+    """One `HalfcourtRecord` per `team` interval in `events`, with clocks mapped to video time via
+    `reads` and player/ball-handler data gathered from `possessions` where a track reached the
+    frontcourt."""
     out: list[HalfcourtRecord] = []
     for index, iv in enumerate(i for i in intervals(events, period_length) if i.team == team):
         outcome, points = derive_outcome(iv.events, team)
@@ -450,16 +466,15 @@ def build_records(game_id: str, team: str, events: list[Event], reads,
         t_start = clock_to_video(reads, iv.start_clock, start_mode)
         t_end = clock_to_video(reads, iv.end_clock, "first")
         if t_start is None or t_end is None or t_end <= t_start:
-            out.append(_unlocated(game_id, index, iv, outcome, points))
+            out.append(_bare_record(game_id, index, iv, outcome, points))
             continue
         t_end = round(t_end + 0.5, 2)  # the read at the terminal clock precedes the event by 1 s
         tracks = gather_tracks(possessions, team, t_start - 3.0, t_end)
         handler = ball_handler_series(tracks)
         t0 = find_t0(tracks, handler, t_start - 1.0, t_end)
         if t0 is None:
-            rec = _unlocated(game_id, index, iv, outcome, points)
-            rec.t_start, rec.t_end, rec.located = t_start, t_end, True
-            out.append(rec)
+            out.append(_bare_record(game_id, index, iv, outcome, points,
+                                     t_start=t_start, t_end=t_end, located=True))
             continue
         setup, no_setup = find_setup(tracks, handler, iv.start_type, t_start, t0, t_end)
         transition = iv.start_type == LIVE and (t_end - t0) < TRANSITION_S

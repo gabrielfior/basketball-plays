@@ -20,8 +20,8 @@ def player(tid, name, jersey, xy_by_t):
 
 def test_frontcourt_image_is_half_the_court():
     img = Mo.frontcourt_image()
-    assert img.shape[1] == int(round(47 * Mo.SCALE)) + 2 * Mo.PADDING   # 306 px at SCALE 6
-    assert img.shape[0] == int(round(50 * Mo.SCALE)) + 2 * Mo.PADDING
+    assert img.shape[1] == round(47 * Mo.SCALE) + 2 * Mo.PADDING  # 306 px at SCALE 6
+    assert img.shape[0] == round(50 * Mo.SCALE) + 2 * Mo.PADDING
 
 
 def test_positions_at_picks_the_nearest_frame_and_labels_by_jersey_then_id():
@@ -33,8 +33,14 @@ def test_positions_at_picks_the_nearest_frame_and_labels_by_jersey_then_id():
 
 
 def test_render_setup_tile_has_fixed_size_and_draws_something():
-    r = rec([player(i, None, str(i), {100.0 + k / 10: (20.0 + i, 10.0 + 6 * i + k) for k in range(20)})
-             for i in range(5)], handler=[[100.0, 20.0, 10.0]])
+    r = rec(
+        [
+            player(i, None, str(i),
+                   {100.0 + k / 10: (20.0 + i, 10.0 + 6 * i + k) for k in range(20)})
+            for i in range(5)
+        ],
+        handler=[[100.0, 20.0, 10.0]],
+    )
     tile = Mo.render_setup_tile(r)
     base = Mo.frontcourt_image()
     assert tile.shape == (base.shape[0] + Mo.HEADER, base.shape[1], 3)
@@ -46,7 +52,8 @@ def test_render_setup_tile_tolerates_no_setup_and_no_players():
     r = rec([], setup=None)
     r.no_setup, r.t0 = True, None
     tile = Mo.render_setup_tile(r)
-    assert tile.shape[2] == 3
+    base = Mo.frontcourt_image()
+    assert tile.shape == (base.shape[0] + Mo.HEADER, base.shape[1], 3)
 
 
 def test_grid_pads_the_last_row():

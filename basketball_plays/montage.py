@@ -15,7 +15,12 @@ HEADER = 22
 DUKE_BGR = (155, 83, 0)
 HANDLER_BGR = (0, 110, 255)
 TRAIL_BGR = (90, 90, 90)
-START_COLOURS = {"ato": (0, 140, 255), "dead": (60, 170, 60), "live": (200, 120, 0), "period": (128, 128, 128)}
+START_COLOURS = {
+    "ato": (0, 140, 255),
+    "dead": (60, 170, 60),
+    "live": (200, 120, 0),
+    "period": (128, 128, 128),
+}
 
 
 def frontcourt_image() -> np.ndarray:
@@ -30,9 +35,9 @@ def positions_at(rec: HalfcourtRecord, t: float) -> list[tuple[str, float, float
     for p in rec.players:
         best = None
         for row in p["trajectory"]:
-            if abs(row[0] - t) < 0.051 and np.isfinite(row[1]) and np.isfinite(row[2]):
-                if best is None or abs(row[0] - t) < abs(best[0] - t):
-                    best = row
+            if (abs(row[0] - t) < 0.051 and np.isfinite(row[1]) and np.isfinite(row[2])
+                    and (best is None or abs(row[0] - t) < abs(best[0] - t))):
+                best = row
         if best is not None:
             label = p.get("jersey") or str(p["track_id"] % 1000)
             out.append((label, float(best[1]), float(best[2])))
@@ -40,7 +45,10 @@ def positions_at(rec: HalfcourtRecord, t: float) -> list[tuple[str, float, float
 
 
 def _trail(rec: HalfcourtRecord, p: dict, t0: float, t1: float) -> list[tuple[int, int]]:
-    rows = [r for r in p["trajectory"] if t0 <= r[0] <= t1 and np.isfinite(r[1]) and np.isfinite(r[2])]
+    rows = [
+        r for r in p["trajectory"]
+        if t0 <= r[0] <= t1 and np.isfinite(r[1]) and np.isfinite(r[2])
+    ]
     return [to_pixel((r[1], r[2]), SCALE, PADDING) for r in rows]
 
 
@@ -52,7 +60,11 @@ def render_setup_tile(rec: HalfcourtRecord, trail_s: float = 2.0) -> np.ndarray:
             pts = _trail(rec, p, t, t + trail_s)
             for k in range(1, len(pts)):
                 cv2.line(court, pts[k - 1], pts[k], TRAIL_BGR, 1, cv2.LINE_AA)
-        handler = next(((x, y) for tt, x, y in rec.ball_handler if abs(tt - t) < 0.051), None)
+        handler = next(
+            ((x, y) for tt, x, y in rec.ball_handler
+             if abs(tt - t) < 0.051 and np.isfinite(x) and np.isfinite(y)),
+            None,
+        )
         if handler is not None:
             cx, cy = to_pixel(handler, SCALE, PADDING)
             cv2.circle(court, (cx, cy), int(2.2 * SCALE), HANDLER_BGR, 2, cv2.LINE_AA)
@@ -67,7 +79,10 @@ def render_setup_tile(rec: HalfcourtRecord, trail_s: float = 2.0) -> np.ndarray:
     flags = ("T" if rec.transition else "") + ("?" if rec.no_setup else "")
     txt = (f"#{rec.index:02d} {rec.start_type:4s} {clock_text(rec.clock_start)} "
            f"{(rec.outcome or '-')[:9]} n={rec.n_visible_at_setup} {flags}")
-    cv2.putText(bar, txt, (10, HEADER - 7), cv2.FONT_HERSHEY_SIMPLEX, 0.38, TEXT_BGR, 1, cv2.LINE_AA)
+    cv2.putText(
+        bar, txt, (10, HEADER - 7), cv2.FONT_HERSHEY_SIMPLEX, 0.38, TEXT_BGR, 1,
+        cv2.LINE_AA,
+    )
     return np.vstack([bar, court])
 
 

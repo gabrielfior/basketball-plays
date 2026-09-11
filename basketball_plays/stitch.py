@@ -40,11 +40,15 @@ def _compatible(a: RawTrack, b: RawTrack) -> bool:
 
 
 def stitch_tracks(
-    tracks: list[RawTrack], fps: float, max_gap_s: float = 1.5, max_dist_ft: float = 6.0
+    tracks: list[RawTrack],
+    fps: float,
+    max_gap_s: float = 1.5,
+    max_dist_ft: float = 6.0,
+    same_frame_dist_ft: float = 3.0,
 ) -> list[RawTrack]:
     """Greedily link a track that ends to the nearest track that starts shortly after it.
 
-    A link needs: a gap of 1 to `max_gap_s` seconds, the same team cluster (or unknown), and
+    A link needs: a gap of 0 to `max_gap_s` seconds (0 = the ids overlap on one frame), the same team cluster (or unknown), and
     the later track starting within `max_dist_ft` of where the earlier one was heading. Each
     track is linked at most once on each side. Linked tracks keep the earliest id.
     """
@@ -64,17 +68,20 @@ def stitch_tracks(
                 if cand.track_id in consumed or cand.track_id == head.track_id:
                     continue
                 gap = cand.start - head.end
-                if gap < 1 or gap > max_gap or not _compatible(head, cand):
+                if gap < 0 or gap > max_gap or not _compatible(head, cand):
                     continue
                 predicted = np.array(head.xy[-1]) + head.velocity() * gap
                 d = float(np.linalg.norm(np.array(cand.xy[0]) - predicted))
-                if d <= max_dist_ft and (best_d is None or d < best_d):
+                # a same-frame handoff (duplicate box at the id switch) must be very close
+                limit = min(max_dist_ft, same_frame_dist_ft) if gap == 0 else max_dist_ft
+                if d <= limit and (best_d is None or d < best_d):
                     best, best_d = cand, d
             if best is None:
                 break
-            head.frames += best.frames
-            head.xy += best.xy
-            head.boxes += best.boxes
+            skip = 1 if best.start == head.end else 0
+            head.frames += best.frames[skip:]
+            head.xy += best.xy[skip:]
+            head.boxes += best.boxes[skip:]
             head.members += best.members
             if head.cluster is None:
                 head.cluster = best.cluster

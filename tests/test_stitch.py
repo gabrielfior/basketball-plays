@@ -49,3 +49,14 @@ def test_unknown_cluster_can_join_either_team():
     b = track(2, range(12, 20), np.linspace(12.5, 14, 8), cluster=None)
     merged = stitch.stitch_tracks([a, b], fps=10)
     assert len(merged) == 1 and merged[0].cluster == 1
+
+
+def test_same_frame_handoff_is_joined_when_close_and_frames_stay_unique():
+    a = track(1, range(10), np.linspace(10, 12, 10))
+    b = track(2, range(9, 20), np.linspace(12.5, 15, 11))  # overlaps a on frame 9, 0.5 ft away
+    merged = stitch.stitch_tracks([a, b], fps=10)
+    assert len(merged) == 1
+    assert merged[0].frames == list(range(20))
+    far = track(3, range(9, 20), np.linspace(16, 18, 11))  # 4 ft away: too far for a same-frame handoff
+    merged = stitch.stitch_tracks([track(1, range(10), np.linspace(10, 12, 10)), far], fps=10)
+    assert len(merged) == 2

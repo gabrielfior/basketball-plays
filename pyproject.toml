@@ -1,0 +1,31 @@
+[project]
+name = "basketball-plays"
+version = "0.1.0"
+description = "Extract player and ball trajectories per possession from broadcast basketball video"
+readme = "README.md"
+requires-python = ">=3.11.9,<3.12"
+dependencies = [
+    "numpy>=1.26",
+    "opencv-python>=4.10",
+    "supervision>=0.25",
+    "modal>=1.0",
+    "tqdm>=4.66",
+    "python-dotenv>=1.0",
+    "requests>=2.32",
+]
+
+[dependency-groups]
+dev = ["pytest>=8", "ruff>=0.6"]
+
+[tool.setuptools]
+packages = ["basketball_plays"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100

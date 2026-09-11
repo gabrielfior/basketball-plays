@@ -112,6 +112,9 @@ def intervals(events: list[Event], period_length: float = 1200.0) -> list[Interv
     cur: Interval | None = None
     pending_ato = False
     last_shot: Event | None = None
+    technical_holder: str | None = None
+    technical_pending = False
+    technical_clock: float | None = None
 
     def close(end_clock: float, terminal: str, free_throws: bool = False) -> None:
         nonlocal cur
@@ -131,6 +134,11 @@ def intervals(events: list[Event], period_length: float = 1200.0) -> list[Interv
     for i, e in enumerate(events):
         if _is_substitution(e):
             continue
+        if technical_pending and not _is_free_throw(e):
+            # the technical's free throws never came (or already ran out): the team that had
+            # the ball keeps it, on a fresh dead-ball setup
+            open_(technical_holder, technical_clock, DEAD)
+            technical_pending, technical_holder = False, None
         if _is_period_end(e):
             close(0.0, PERIOD_END)
             break
@@ -146,21 +154,31 @@ def intervals(events: list[Event], period_length: float = 1200.0) -> list[Interv
             open_(team, e.clock, DEAD)
             continue
         if _is_free_throw(e):
+            if technical_pending:
+                # possession does not change on a technical foul; ignore who shoots it
+                if _is_last_free_throw(e) or "1 of 1" in e.text.lower():
+                    open_(technical_holder, e.clock, DEAD)
+                    technical_pending, technical_holder = False, None
+                continue
             # free throws belong to no interval; an interval opened at this clock for the
             # fouling team (and-one) is discarded by the zero-duration filter
             if cur is not None and cur.team != e.team:
                 cur = None
-            if _is_last_free_throw(e) or "1 of 1" in e.text.lower():
-                if _is_made(e):
-                    open_(other.get(e.team), e.clock, DEAD)
+            if (_is_last_free_throw(e) or "1 of 1" in e.text.lower()) and _is_made(e):
+                open_(other.get(e.team), e.clock, DEAD)
             continue
         if cur is not None:
             cur.events.append(e)
         if _is_shot(e):
             if cur is None or cur.team != e.team:
-                # possession bookkeeping got out of sync; start a fresh interval for the shooter
                 close(e.clock, STOPPAGE)
-                open_(e.team, e.clock, LIVE)
+                if not out:
+                    # the period's first shot with no jump ball on record: start of period
+                    open_(e.team, period_length, PERIOD)
+                else:
+                    # possession bookkeeping got out of sync; start a fresh interval for the
+                    # shooter
+                    open_(e.team, e.clock, LIVE)
                 cur.events.append(e)
             last_shot = e
             if _is_made(e):
@@ -190,12 +208,19 @@ def intervals(events: list[Event], period_length: float = 1200.0) -> list[Interv
         if _is_steal(e):
             continue
         if _is_foul(e):
+            if "technical" in _low(e):
+                # possession doesn't change; remember who had it until the technical FTs resolve
+                holder = cur.team if cur is not None else None
+                close(e.clock, STOPPAGE)
+                technical_holder, technical_pending, technical_clock = holder, True, e.clock
+                continue
             fouled = other.get(e.team)
-            if cur is not None and cur.team == e.team and not _free_throws_follow(events, i, fouled):
+            ft_follow = _free_throws_follow(events, i, fouled)
+            if cur is not None and cur.team == e.team and not ft_follow:
                 # offensive foul: a turnover
                 close(e.clock, TURNOVER)
                 open_(fouled, e.clock, DEAD)
-            elif fouled is not None and _free_throws_follow(events, i, fouled):
+            elif fouled is not None and ft_follow:
                 if cur is not None and cur.team == fouled:
                     close(e.clock, FOUL, free_throws=True)
                 else:

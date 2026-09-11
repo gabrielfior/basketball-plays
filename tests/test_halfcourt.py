@@ -98,3 +98,85 @@ def test_and_one_does_not_create_an_empty_interval_for_the_fouling_team():
 def test_zero_duration_intervals_are_dropped():
     for iv in H.intervals(OPENING):
         assert iv.end_clock < iv.start_clock
+
+
+def test_period_end_closes_an_open_interval():
+    events = [
+        ev("20:00", None, "Jumpball", "Start game"),
+        ev("19:59", D, "Jumpball", "Jump Ball won by Duke"),
+        ev("0:00", None, "End Period", "End of 1st Half"),
+    ]
+    ivs = [summary(i) for i in H.intervals(events)]
+    assert ivs == [(D, 1199, 0.0, "live", "period_end", False)]
+
+
+def test_offensive_foul_turns_the_ball_over():
+    events = [
+        ev("20:00", None, "Jumpball", "Start game"),
+        ev("19:59", D, "Jumpball", "Jump Ball won by Duke"),
+        ev("10:00", D, "PersonalFoul", "Foul on Cameron Boozer."),
+        ev("9:50", M, "JumpShot", "Yaxel Lendeborg makes 10-foot jumper"),
+    ]
+    ivs = [summary(i) for i in H.intervals(events)]
+    assert ivs == [
+        (D, 1199, 600, "live", "turnover", False),
+        (M, 600, 590, "dead", "shot", False),
+    ]
+
+
+def test_turnover_without_a_steal_opens_a_dead_ball_interval():
+    events = [
+        ev("20:00", None, "Jumpball", "Start game"),
+        ev("19:59", D, "Jumpball", "Jump Ball won by Duke"),
+        ev("9:00", D, "Lost Ball Turnover", "Cameron Boozer traveling turnover"),
+        ev("8:50", M, "JumpShot", "Yaxel Lendeborg makes 10-foot jumper"),
+    ]
+    ivs = [summary(i) for i in H.intervals(events)]
+    assert ivs == [
+        (D, 1199, 540, "live", "turnover", False),
+        (M, 540, 530, "dead", "shot", False),
+    ]
+
+
+def test_dead_ball_rebound_closes_the_shot_and_opens_dead_ball():
+    events = [
+        ev("20:00", None, "Jumpball", "Start game"),
+        ev("19:59", D, "Jumpball", "Jump Ball won by Duke"),
+        ev("8:40", D, "JumpShot", "Isaiah Evans misses 24-foot three point jumper"),
+        ev("8:30", M, "Dead Ball Rebound", "Michigan Dead Ball Rebound."),
+        ev("8:10", M, "JumpShot", "Yaxel Lendeborg makes 10-foot jumper"),
+    ]
+    ivs = [summary(i) for i in H.intervals(events)]
+    assert ivs == [
+        (D, 1199, 520, "live", "shot", False),
+        (M, 510, 490, "dead", "shot", False),
+    ]
+
+
+def test_offensive_rebound_with_no_open_interval_starts_live():
+    events = [
+        ev("7:10", M, "MadeFreeThrow", "Yaxel Lendeborg misses free throw 1 of 1"),
+        ev("7:00", M, "Offensive Rebound", "Aday Mara Offensive Rebound."),
+        ev("6:50", M, "JumpShot", "Aday Mara makes 5-foot jumper"),
+    ]
+    ivs = [summary(i) for i in H.intervals(events)]
+    assert ivs == [(M, 420, 410, "live", "shot", False)]
+
+
+def test_technical_foul_keeps_possession_through_the_free_throw():
+    events = [
+        ev("20:00", None, "Jumpball", "Start game"),
+        ev("19:59", D, "Jumpball", "Jump Ball won by Duke"),
+        ev("6:00", M, "TechnicalFoul", "Technical foul on Michigan bench"),
+        ev("6:00", D, "MadeFreeThrow", "Cameron Boozer makes technical free throw 1 of 1"),
+        ev("5:50", D, "JumpShot", "Cameron Boozer makes 10-foot jumper"),
+    ]
+    ivs = [summary(i) for i in H.intervals(events) if i.team == D]
+    assert ivs[0] == (D, 1199, 360, "live", "stoppage", False)
+    assert ivs[1] == (D, 360, 350, "dead", "shot", False)
+
+
+def test_first_shot_with_no_jump_ball_opens_a_period_interval():
+    events = [ev("19:40", D, "JumpShot", "Cameron Boozer makes 10-foot jumper")]
+    first = H.intervals(events)[0]
+    assert summary(first) == (D, 1200, 1180, "period", "shot", False)

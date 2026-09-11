@@ -1,3 +1,5 @@
+import json
+
 from basketball_plays import halfcourt as H
 from basketball_plays.playbyplay import Event
 from basketball_plays.schema import PlayerTrack, Possession
@@ -317,3 +319,38 @@ def test_find_setup_without_a_still_frame_flags_no_setup():
     tracks = _still_tracks(100.0, 60, moving=True)
     assert H.find_setup(tracks, {}, "live", 99.0, 100.0, 115.0) == (100.0, True)
     assert H.find_setup(tracks, {}, "ato", 99.0, 100.0, 115.0) == (100.0, True)
+
+
+def test_build_records_end_to_end_on_a_synthetic_possession():
+    # Michigan scores at 19:32 (clock 1172), Duke inbounds, walks it up, Evans misses at 19:14 (1154),
+    # Michigan rebounds at 19:07. Scoreboard: clock 1172 shown at video 60..63 s, then runs.
+    events = OPENING[:8]
+    rs = reads([(58, 1174), (59, 1173), (60, 1172), (61, 1172), (62, 1172), (63, 1172)]
+               + [(63 + k, 1171 - (k - 1)) for k in range(1, 30)])
+    # Duke tracks: five players walking up from 60 s, still from 66 s to 70 s, at the right basket
+    players = []
+    for i in range(5):
+        rows = traj(60.0, 60, 30.0 + 2 * i, 8.0 + 8 * i, dx=0.3)          # moving up court (mirrored later)
+        rows += traj(66.0, 40, rows[-1][1], rows[-1][2])                    # still
+        players.append(PlayerTrack(10 + i, "Duke", None, None, rows, [], holding=[66.5] if i == 0 else []))
+    pos = make_possession(players, basket="right", t0=60.0, t1=70.0)
+    recs = H.build_records("test", "Duke", events, rs, [pos])
+    assert len(recs) == 1
+    r = recs[0]
+    assert (r.start_type, r.terminal, r.clock_start, r.clock_end) == ("dead", "shot", 1172, 1150)
+    assert r.located and r.t_start == 63.0                    # last read showing 19:32 -> inbound
+    assert r.t_end == H.clock_to_video(rs, 1150, "first") + 0.5   # half a second of slack past the read
+    assert r.t0 is not None and r.setup is not None and not r.no_setup and not r.transition
+    assert r.outcome == "missed_3"
+    assert r.n_visible_at_setup == 5
+    assert len(r.players) == 5 and all(row[1] < 47 for p in r.players for row in p["trajectory"][-5:])
+    back = H.HalfcourtRecord.from_dict(json.loads(r.to_json()))
+    assert back.setup == r.setup
+    assert [e["type"] for e in back.events] == ["JumpShot", "Offensive Rebound", "JumpShot", "Defensive Rebound"]
+
+
+def test_build_records_marks_unlocatable_intervals():
+    events = OPENING[:8]
+    rs = reads([(10, 1199), (11, 1198)])                      # timeline ends long before 1172
+    recs = H.build_records("test", "Duke", events, rs, [])
+    assert len(recs) == 1 and not recs[0].located and recs[0].t_start is None and recs[0].players == []

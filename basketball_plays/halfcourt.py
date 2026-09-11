@@ -3,13 +3,14 @@ gathering, t0 and setup detection. See the 2026-09-11 design spec, Definitions."
 
 from __future__ import annotations
 
+import json
 import re
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 
 import numpy as np
 
 from basketball_plays import zones
-from basketball_plays.playbyplay import Event
+from basketball_plays.playbyplay import Event, derive_outcome
 from basketball_plays.schema import Possession
 
 ATO, DEAD, LIVE, PERIOD = "ato", "dead", "live", "period"
@@ -394,3 +395,86 @@ def find_setup(tracks: list[Track], handler: dict[float, tuple[float, float]], s
             continue
         return t, False
     return t0, True
+
+
+@dataclass
+class HalfcourtRecord:
+    game_id: str
+    index: int
+    team: str
+    start_type: str
+    terminal: str
+    free_throws: bool
+    clock_start: float
+    clock_end: float
+    t_start: float | None
+    t_end: float | None
+    t0: float | None
+    setup: float | None
+    no_setup: bool
+    transition: bool
+    located: bool
+    outcome: str | None
+    points: int
+    n_visible_at_setup: int
+    players: list[dict] = field(default_factory=list)
+    ball_handler: list[list[float]] = field(default_factory=list)
+    events: list[dict] = field(default_factory=list)
+
+    def to_json(self) -> str:
+        return json.dumps(asdict(self), separators=(",", ":"))
+
+    @classmethod
+    def from_dict(cls, d: dict) -> HalfcourtRecord:
+        return cls(**d)
+
+
+def _unlocated(game_id: str, index: int, iv: Interval, outcome: str | None,
+               points: int) -> HalfcourtRecord:
+    return HalfcourtRecord(
+        game_id=game_id, index=index, team=iv.team, start_type=iv.start_type, terminal=iv.terminal,
+        free_throws=iv.free_throws, clock_start=iv.start_clock, clock_end=iv.end_clock,
+        t_start=None, t_end=None, t0=None, setup=None, no_setup=True, transition=False,
+        located=False, outcome=outcome, points=points, n_visible_at_setup=0,
+        events=[e.to_dict() for e in iv.events],
+    )
+
+
+def build_records(game_id: str, team: str, events: list[Event], reads,
+                   possessions: list[Possession],
+                   period_length: float = 1200.0) -> list[HalfcourtRecord]:
+    out: list[HalfcourtRecord] = []
+    for index, iv in enumerate(i for i in intervals(events, period_length) if i.team == team):
+        outcome, points = derive_outcome(iv.events, team)
+        start_mode = "first" if iv.start_type == LIVE else "last"
+        t_start = clock_to_video(reads, iv.start_clock, start_mode)
+        t_end = clock_to_video(reads, iv.end_clock, "first")
+        if t_start is None or t_end is None or t_end <= t_start:
+            out.append(_unlocated(game_id, index, iv, outcome, points))
+            continue
+        t_end = round(t_end + 0.5, 2)  # the read at the terminal clock precedes the event by 1 s
+        tracks = gather_tracks(possessions, team, t_start - 3.0, t_end)
+        handler = ball_handler_series(tracks)
+        t0 = find_t0(tracks, handler, t_start - 1.0, t_end)
+        if t0 is None:
+            rec = _unlocated(game_id, index, iv, outcome, points)
+            rec.t_start, rec.t_end, rec.located = t_start, t_end, True
+            out.append(rec)
+            continue
+        setup, no_setup = find_setup(tracks, handler, iv.start_type, t_start, t0, t_end)
+        transition = iv.start_type == LIVE and (t_end - t0) < TRANSITION_S
+        visible, _ = still_players(tracks, setup)
+        out.append(HalfcourtRecord(
+            game_id=game_id, index=index, team=team, start_type=iv.start_type, terminal=iv.terminal,
+            free_throws=iv.free_throws, clock_start=iv.start_clock, clock_end=iv.end_clock,
+            t_start=t_start, t_end=t_end, t0=t0, setup=setup, no_setup=no_setup,
+            transition=transition, located=True, outcome=outcome, points=points,
+            n_visible_at_setup=visible,
+            players=[{"track_id": tr.track_id, "name": tr.name, "jersey": tr.jersey,
+                      "trajectory": [[t, round(x, 2), round(y, 2)]
+                                     for t, (x, y) in sorted(tr.xy.items())]}
+                     for tr in tracks],
+            ball_handler=[[t, round(x, 2), round(y, 2)] for t, (x, y) in handler.items()],
+            events=[e.to_dict() for e in iv.events],
+        ))
+    return out

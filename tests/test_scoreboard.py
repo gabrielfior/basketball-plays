@@ -126,6 +126,8 @@ def stub_modes(monkeypatch, texts):
     """Make ocr_digits see `texts` as the per-mode tesseract output, in OCR_MODES order."""
     monkeypatch.setattr(sb, "preprocess", lambda crop: crop)
     monkeypatch.setattr(sb, "_run_modes", lambda img, modes=sb.OCR_MODES: list(texts))
+    # No glyphs reported, so the glyph-at-a-time fallback stays out of the selection's way.
+    monkeypatch.setattr(sb, "_glyphs", lambda img, height=sb.OCR_TARGET_HEIGHT: [])
 
 
 def test_ocr_digits_prefers_the_reading_the_most_modes_agree_on(monkeypatch):

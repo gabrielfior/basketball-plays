@@ -33,6 +33,15 @@ class ScoreboardRead:
         return json.dumps(asdict(self), separators=(",", ":"))
 
 
+# Height, in pixels, that a *single glyph* is normalised to before it is OCR'd on its own (see
+# `_glyph_text`). Tesseract segments a line of digits badly when the glyphs are huge — the 4x
+# upscale below makes a 42px score box 168px tall, and tesseract then answers "1" for a clear
+# "51" — but it reads those same digits correctly one at a time at this height. Normalising the
+# whole crop to it instead was measured and is much worse: it shrinks the crops that already
+# read, so the good cases break faster than the bad ones heal.
+OCR_TARGET_HEIGHT = 48
+
+
 def preprocess(crop: np.ndarray) -> np.ndarray:
     g = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
     g = cv2.resize(g, None, fx=4, fy=4, interpolation=cv2.INTER_CUBIC)
@@ -57,6 +66,11 @@ def tesseract(img: np.ndarray, psm: int, whitelist: str = "0123456789:.") -> str
 
 
 OCR_MODES = (7, 13, 8, 10)  # line, raw line (works for a lone digit), word, single character
+# The glyph-at-a-time fallback samples two heights so that a disagreement between the two modes
+# at one height can be outvoted rather than broken by mode order.
+GLYPH_HEIGHTS = (OCR_TARGET_HEIGHT, 32)
+GLYPH_MODES = (10, 13)  # single character, raw line: the two that suit one isolated digit
+MAX_GLYPHS = 4  # "12:04" is the longest real reading; more components than that is noise
 
 
 def _run_modes(img: np.ndarray, modes: tuple[int, ...] = OCR_MODES) -> list[str]:
@@ -75,6 +89,58 @@ def _is_plausible(text: str) -> bool:
     return bool(re.fullmatch(r"\d{1,2}", text))
 
 
+def _glyphs(img: np.ndarray, height: int = OCR_TARGET_HEIGHT) -> list[np.ndarray]:
+    """Split a preprocessed crop into its glyphs, left to right, each normalised to `height`.
+    Two filters keep non-digits out, because over-segmenting is the dangerous direction: it makes
+    the caller believe a digit went missing and re-read a crop that was already right. Anything
+    narrower than a fifth of its height is a panel edge or divider — those hairlines run the full
+    height of the crop, so they have to go before the tallest component is chosen, or they would
+    become it. Then anything shorter than 60% of the tallest survivor is a speck, a colon dot or
+    a clipped neighbouring graphic rather than a digit."""
+    n, _, stats, _ = cv2.connectedComponentsWithStats(255 - img, 8)
+    boxes = [tuple(stats[i][:4]) for i in range(1, n)
+             if stats[i][cv2.CC_STAT_AREA] >= 20
+             and stats[i][cv2.CC_STAT_WIDTH] >= 0.2 * stats[i][cv2.CC_STAT_HEIGHT]]
+    if not boxes:
+        return []
+    tallest = max(b[3] for b in boxes)
+    out = []
+    for x, y, w, h in sorted(b for b in boxes if b[3] >= 0.6 * tallest):
+        scale = height / h
+        g = cv2.resize(img[y:y + h, x:x + w], (max(1, round(int(w) * scale)), height),
+                       interpolation=cv2.INTER_CUBIC if scale > 1 else cv2.INTER_AREA)
+        out.append(cv2.copyMakeBorder(g, 20, 20, 20, 20, cv2.BORDER_CONSTANT, value=255))
+    return out
+
+
+def _glyph_text(img: np.ndarray, n_glyphs: int) -> str:
+    """Re-read `img` a glyph at a time, voting per position across modes and glyph heights.
+
+    Used only when whole-crop OCR came back with fewer digits than there are glyphs, which is the
+    dropped-digit signature. Reading one digit in isolation takes tesseract's line segmentation —
+    the part that drops digits — out of the loop entirely.
+    """
+    by_height = [gs for gs in (_glyphs(img, h) for h in GLYPH_HEIGHTS) if len(gs) == n_glyphs]
+    if not by_height:
+        return ""
+    out = []
+    for i in range(n_glyphs):
+        votes: Counter = Counter()
+        for glyphs in by_height:
+            for psm in GLYPH_MODES:
+                text = tesseract(glyphs[i], psm, whitelist="0123456789").replace(" ", "")
+                if len(text) == 1:
+                    votes[text] += 1
+            # The modes usually agree at the first height; only then is a second one worth
+            # paying for, to break the tie rather than let mode order decide it.
+            if len(votes) == 1 and sum(votes.values()) > 1:
+                break
+        if not votes:
+            return ""
+        out.append(votes.most_common(1)[0][0])
+    return "".join(out)
+
+
 def ocr_digits(crop: np.ndarray) -> str:
     """Read the digits in `crop`, running every mode and keeping the best answer.
 
@@ -84,16 +150,31 @@ def ocr_digits(crop: np.ndarray) -> str:
     chosen — first preferring readings that look like a scoreboard value, then the reading the
     most modes agree on, then the longest, since the failure mode is a dropped digit and the
     longer reading is the more complete one. Ties fall back to the order in OCR_MODES.
+
+    Some crops defeat every mode: tesseract answers "1" for a clear "51" and "7" for "77" at
+    every psm and every scale, because its line segmentation, not its classifier, is what loses
+    the digit. Those are caught by comparing the reading against the number of glyphs actually in
+    the crop and, when digits are missing, re-reading one glyph at a time (`_glyph_text`).
     """
-    texts = _run_modes(preprocess(crop))
+    img = preprocess(crop)
+    texts = _run_modes(img)
     ranked = [(text, i) for i, text in enumerate(texts) if text]
-    if not ranked:
-        return ""
-    # When nothing looks like a scoreboard value, keep every non-empty reading rather than
-    # returning "": parse_score and clock_candidates can still salvage e.g. a dropped colon.
-    pool = [(text, i) for text, i in ranked if _is_plausible(text)] or ranked
-    counts = Counter(text for text, _ in pool)
-    return min(pool, key=lambda ti: (-counts[ti[0]], -len(ti[0]), ti[1]))[0]
+    best = ""
+    if ranked:
+        # When nothing looks like a scoreboard value, keep every non-empty reading rather than
+        # returning "": parse_score and clock_candidates can still salvage a dropped colon.
+        pool = [(text, i) for text, i in ranked if _is_plausible(text)] or ranked
+        counts = Counter(text for text, _ in pool)
+        best = min(pool, key=lambda ti: (-counts[ti[0]], -len(ti[0]), ti[1]))[0]
+    # Whole-crop OCR saw fewer digits than the crop has glyphs, so tesseract's line segmentation
+    # dropped one. Re-read a glyph at a time, which bypasses that segmentation. The glyph count
+    # is bounded: a scoreboard box holds a score or a clock, so more than MAX_GLYPHS components
+    # means the crop is framing something else, and paying for per-glyph OCR on noise is the one
+    # way this fallback could cost real time.
+    n_glyphs = len(_glyphs(img))
+    if 2 <= n_glyphs <= MAX_GLYPHS and n_glyphs > len(re.sub(r"\D", "", best)):
+        return _glyph_text(img, n_glyphs) or best
+    return best
 
 
 def parse_score(text: str) -> int | None:

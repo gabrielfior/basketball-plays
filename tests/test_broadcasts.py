@@ -29,11 +29,10 @@ def test_unknown_layout_raises():
                                                      # the ncaa layout's alternative)
     ("cw_wake.jpg", "cw", 492, 18, 17),             # 8:12, Wake Forest 18 at Duke 17
     ("cw_wake_1500.jpg", "cw", 240, 25, 32),        # 4:00, Wake Forest 25 at Duke 32
-    # cw_wake_2500.jpg (12:04, Wake 51, Duke 61) and cw_wake_3500.jpg (5:41, Wake 55, Duke 77)
-    # are left out: the regions do frame both digits (the crops read "51" and "77" by eye), but
-    # tesseract answers "1" and "7" in every psm at every scale, so neither the layout nor
-    # ocr_digits' choice of mode can recover them. What does work is splitting the crop into
-    # connected components and scaling each glyph to ~48px before OCR; see the task 4c report.
+    # These two read "1" and "7" -- a dropped tens digit -- under whole-crop OCR in every psm at
+    # every scale. They pass via ocr_digits' glyph-at-a-time fallback.
+    ("cw_wake_2500.jpg", "cw", 724, 51, 61),        # 12:04, Wake Forest 51 at Duke 61
+    ("cw_wake_3500.jpg", "cw", 341, 55, 77),        # 5:41, Wake Forest 55 at Duke 77
     ("cbssn_army.jpg", "cbssn", 424, 29, 20),       # 7:04, Duke 29 at Army 20
 ])
 def test_layouts_read_the_fixture_frames(name, layout, clock, away, home):

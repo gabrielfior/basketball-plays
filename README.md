@@ -133,9 +133,13 @@ finished chunks).
 
 `coverage.json` carries, besides the per-period counts (`intervals`, `located`, `dead_ball`,
 `dead_ball_with_setup`, `start_types`): `layout`, `expected_periods`, `detected_periods`,
-`period_check`, `ocr_reads` and the `clock_trust_rate` / `score_trust_rate` of the whole game's
-cleaned timeline, `espn_agree` / `espn_disagree` (possessions where ESPN's points and the
-scoreboard delta both exist, and agree or not), and `cost_estimate` when the `gpu` step ran.
+`period_check`, `ocr_reads`, `espn_agree` / `espn_disagree` (possessions where ESPN's points and
+the scoreboard delta both exist, and agree or not), and `cost_estimate` when the `gpu` step ran.
+`clock_trust_rate` and `score_trust_rate` (the fraction of that period's scoreboard reads whose
+clock, and whose score, survived cleaning) appear in every `periods[]` entry alongside that
+period's `ocr_reads`, and at the top level as the read-count-weighted average over the periods.
+They are computed per period on purpose: `clean_timeline` enforces a non-increasing clock, so
+cleaning a whole game in one pass rejects nearly everything after the clock resets at half time.
 
 When the automatic cluster-to-team decision is wrong for a game, re-run extraction with
 `--team-map "0=<team>"` (e.g. `--team-map "0=North Carolina"`): the name must be one of that
@@ -170,9 +174,10 @@ spans), per-period annotation and half-court records:
 
 Two periods were detected at the expected boundary (period 2 starts at video 36.6 min, the
 expected half-time mark), matching the two periods in ESPN's play-by-play (`"period_check":
-"ok"`). Over the whole game the cleaned scoreboard timeline has 4,634 reads with the clock
-trusted on 41% and the score on 72% of them, and ESPN's per-possession points agree with the
-scoreboard delta on 144 possessions against 9 disagreements.
+"ok"`). The scoreboard timeline has 4,634 reads over the whole game; cleaned per period, the
+clock is trusted on 85.2% of period 1's 2,198 reads and 86.9% of period 2's 2,446, and the score
+on 81.4% and 86.8% (86.1% and 84.2% weighted over the game). ESPN's per-possession points agree
+with the scoreboard delta on 144 possessions against 9 disagreements.
 
 An earlier run of this smoke test showed a much lower period-1 setup rate (3 of 16 dead-ball
 intervals, 19%) than period 2's. The cause was the offense map: it was learned once over the

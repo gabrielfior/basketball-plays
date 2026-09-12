@@ -108,18 +108,42 @@ def test_check_periods_continues_and_records_the_mismatch_when_allowed(tmp_path)
     assert fields == {"expected_periods": 3, "detected_periods": 2, "period_check": "mismatch"}
 
 
-def test_ocr_quality_reports_trusted_fractions_of_the_whole_timeline():
-    good = [sb.ScoreboardRead(t=float(i), clock=1200.0 - i, clock_text=None, away=10, home=12)
-            for i in range(6)]
-    blank = [sb.ScoreboardRead(t=float(i), clock=None, clock_text=None, away=None, home=None)
-             for i in range(6, 10)]
+def a_read(t, clock=None, away=None, home=None):
+    return sb.ScoreboardRead(t=float(t), clock=clock, clock_text=None, away=away, home=home)
 
-    assert ingest.ocr_quality(good) == {"ocr_reads": 6, "clock_trust_rate": 1.0,
-                                        "score_trust_rate": 1.0}
-    assert ingest.ocr_quality(good + blank) == {"ocr_reads": 10, "clock_trust_rate": 0.6,
-                                                "score_trust_rate": 0.6}
-    assert ingest.ocr_quality([]) == {"ocr_reads": 0, "clock_trust_rate": 0.0,
-                                      "score_trust_rate": 0.0}
+
+def test_trust_rates_are_the_fractions_of_reads_that_survived_cleaning():
+    good = [a_read(i, clock=1200.0 - i, away=10, home=12) for i in range(6)]
+    no_clock = [a_read(i, clock=None, away=10, home=12) for i in range(6, 10)]
+    nothing = [a_read(i) for i in range(10, 12)]
+
+    assert ingest.trust_rates(good) == (1.0, 1.0)
+    assert ingest.trust_rates(good + no_clock) == (0.6, 1.0)  # score still read on all ten
+    assert ingest.trust_rates(good + no_clock + nothing) == (0.5, 10 / 12)
+    assert ingest.trust_rates([a_read(0, clock=5.0, away=10, home=None)]) == (1.0, 0.0)
+    assert ingest.trust_rates([]) == (0.0, 0.0)
+
+
+def test_trust_rates_must_be_computed_per_period_not_over_the_whole_game():
+    # clean_timeline enforces a non-increasing clock, so a whole-game pass throws away the
+    # second half (the clock resets at half time) and reports a far too pessimistic rate.
+    half1 = [a_read(i, clock=1200.0 - i, away=0, home=0) for i in range(600)]
+    half2 = [a_read(600 + i, clock=1200.0 - i, away=0, home=0) for i in range(600)]
+
+    whole_game, _ = ingest.trust_rates(sb.clean_timeline(half1 + half2))
+    per_period = [ingest.trust_rates(sb.clean_timeline(h))[0] for h in (half1, half2)]
+
+    assert per_period == [1.0, 1.0]
+    assert whole_game < 0.6
+
+
+def test_game_trust_rates_weight_each_period_by_its_read_count():
+    # 900 reads at 1.0 and 100 at 0.0 average to 0.9, not to 0.5.
+    assert ingest.weighted_trust_rates([(900, 1.0, 0.8), (100, 0.0, 0.3)]) == {
+        "clock_trust_rate": 0.9, "score_trust_rate": 0.75}
+    assert ingest.weighted_trust_rates([(0, 0.0, 0.0)]) == {"clock_trust_rate": 0.0,
+                                                            "score_trust_rate": 0.0}
+    assert ingest.weighted_trust_rates([]) == {"clock_trust_rate": 0.0, "score_trust_rate": 0.0}
 
 
 def a_possession(pid, espn_points, scoreboard_points):

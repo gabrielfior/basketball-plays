@@ -229,6 +229,7 @@ def step_halfcourt(game, paths, dry, allow_mismatch=False):
     possessions = read_possessions(paths.trajectories)
     records = []
     coverage = {"game": game.espn_id, "layout": game.layout, **period_fields, "periods": []}
+    trust: list[tuple[int, float, float]] = []
     for span in spans:
         events = pbp.parse_events(summary["plays"], period=span.period, team_by_id=info.team_by_id)
         reads = sb.clean_timeline([r for r in reads_raw if span.t_lo - 5 <= r.t <= span.t_hi + 5],
@@ -240,13 +241,18 @@ def step_halfcourt(game, paths, dry, allow_mismatch=False):
         records.extend(recs)
         dead = [r for r in recs if r.located and r.t0 is not None and not r.transition
                 and r.start_type in ("ato", "dead")]
+        clock_rate, score_rate = trust_rates(reads)
+        trust.append((len(reads), clock_rate, score_rate))
         coverage["periods"].append({
             "period": span.period, "t_lo": span.t_lo, "t_hi": span.t_hi, "intervals": len(recs),
             "located": sum(r.located and r.t0 is not None for r in recs),
             "dead_ball": len(dead), "dead_ball_with_setup": sum(not r.no_setup for r in dead),
             "start_types": dict(Counter(r.start_type for r in recs)),
+            "ocr_reads": len(reads), "clock_trust_rate": round(clock_rate, 3),
+            "score_trust_rate": round(score_rate, 3),
         })
-    coverage.update(ocr_quality(reads_raw))
+    coverage["ocr_reads"] = len(reads_raw)
+    coverage.update(weighted_trust_rates(trust))
     coverage.update(espn_agreement(possessions))
     cost = paths.root / "cost.json"
     if cost.exists():
@@ -256,16 +262,30 @@ def step_halfcourt(game, paths, dry, allow_mismatch=False):
     print(json.dumps(coverage, indent=2))
 
 
-def ocr_quality(reads_raw) -> dict:
-    """How much of the whole game's cleaned scoreboard timeline is trusted."""
-    reads = sb.clean_timeline(reads_raw)
+def trust_rates(reads) -> tuple[float, float]:
+    """Fractions of already-cleaned `reads` whose clock, and whose score, survived cleaning.
+
+    Must be given one period's reads at a time: `sb.clean_timeline` enforces a non-increasing
+    clock, so cleaning a whole game in one pass rejects nearly every read after the clock resets
+    at half time (0.41 clock trust for the Michigan game, against 0.85/0.87 per period).
+    """
     n = len(reads)
     if not n:
-        return {"ocr_reads": 0, "clock_trust_rate": 0.0, "score_trust_rate": 0.0}
-    clock = sum(r.clock is not None for r in reads)
-    score = sum(r.away is not None and r.home is not None for r in reads)
-    return {"ocr_reads": n, "clock_trust_rate": round(clock / n, 3),
-            "score_trust_rate": round(score / n, 3)}
+        return 0.0, 0.0
+    clock = sum(r.clock is not None for r in reads) / n
+    score = sum(r.away is not None and r.home is not None for r in reads) / n
+    return clock, score
+
+
+def weighted_trust_rates(per_period: list[tuple[int, float, float]]) -> dict:
+    """Game-level trust rates: the per-period rates weighted by each period's read count."""
+    total = sum(n for n, _, _ in per_period)
+    if not total:
+        return {"clock_trust_rate": 0.0, "score_trust_rate": 0.0}
+    return {
+        "clock_trust_rate": round(sum(n * c for n, c, _ in per_period) / total, 3),
+        "score_trust_rate": round(sum(n * s for n, _, s in per_period) / total, 3),
+    }
 
 
 def espn_agreement(possessions) -> dict:

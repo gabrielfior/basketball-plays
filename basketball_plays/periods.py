@@ -11,6 +11,7 @@ NEAR_S = 30.0          # a candidate's clock must be within this of a period len
 ENDED_BELOW_S = 30.0   # the outgoing period must have counted down to at least this low
 CONFIRM_WINDOW_S = 60.0  # look this far ahead to confirm a fresh countdown, not a blip
 _K = 5  # width of the trailing/rolling median windows
+SCORE_TOL = 12  # a read's score may differ from its neighbours' median by at most this
 
 
 @dataclass(frozen=True)
@@ -18,6 +19,29 @@ class PeriodSpan:
     period: int
     t_lo: float
     t_hi: float
+
+
+def _score_consistent(trusted_reads, i: int, tol: float = SCORE_TOL) -> bool:
+    """Whether read `i`'s scores agree with its neighbours, so it may count toward a run-down.
+
+    `trusted_reads` is a sequence of `(t, clock, away, home)` tuples. For each side (away, home),
+    the reference is the median of that side's non-None values among up to `_K` reads before `i`
+    and `_K` reads after (excluding `i` itself). A side with no such neighbour has no reference
+    and is treated as consistent, which keeps reads with `away=None, home=None` (as in tests that
+    don't model scores) trusted. Otherwise the read is inconsistent for that side when its value
+    is None or differs from the reference by more than `tol`.
+    """
+    _, _, away, home = trusted_reads[i]
+    lo, hi = max(0, i - _K), min(len(trusted_reads), i + _K + 1)
+    neighbours = trusted_reads[lo:i] + trusted_reads[i + 1:hi]
+
+    def side_ok(value, idx):
+        refs = [r[idx] for r in neighbours if r[idx] is not None]
+        if not refs:
+            return True
+        return value is not None and abs(value - statistics.median(refs)) <= tol
+
+    return side_ok(away, 2) and side_ok(home, 3)
 
 
 def period_spans(reads, min_jump_s: float = 200.0, min_span_s: float = 300.0) -> list[PeriodSpan]:
@@ -39,6 +63,10 @@ def period_spans(reads, min_jump_s: float = 200.0, min_span_s: float = 300.0) ->
     - the outgoing period must have visibly run down first (a rolling median of `_K` consecutive
       reads since the last accepted start reached `ENDED_BELOW_S` or below) — a period cannot end
       before it's had time to end;
+    - a read only counts toward that run-down when its scores are consistent with its neighbours
+      (`_score_consistent`): a broadcast graphic that briefly replaces the scoreboard reads
+      random digits in the clock box alongside garbage scores, and a handful of such reads can
+      otherwise look like a run-down all on their own;
     - at least `min_span_s` of video must have elapsed since the last accepted start, so a run of
       misreads packed close together cannot fabricate a period;
     - the reads in the following `CONFIRM_WINDOW_S` seconds must mostly look like a fresh
@@ -49,17 +77,21 @@ def period_spans(reads, min_jump_s: float = 200.0, min_span_s: float = 300.0) ->
     The last span ends `5.0` s after the last trusted read. Periods are numbered from 1, and
     spans are contiguous: each span's `t_lo` is the previous span's `t_hi`.
     """
-    trusted = sorted(((r.t, r.clock) for r in reads if r.clock is not None), key=lambda p: p[0])
+    trusted = sorted(((r.t, r.clock, r.away, r.home) for r in reads if r.clock is not None),
+                     key=lambda p: p[0])
     if not trusted:
         return []
 
     starts = [trusted[0][0]]
-    since_clocks = [trusted[0][1]]  # clocks seen since the last accepted start (inclusive)
+    # clocks seen since the last accepted start (inclusive), skipping reads whose scores are
+    # inconsistent with their neighbours (see _score_consistent) so a stray graphic's garbage
+    # scores cannot fake a run-down
+    since_clocks = [trusted[0][1]] if _score_consistent(trusted, 0) else []
     ran_down = len(since_clocks) >= _K and statistics.median(since_clocks[-_K:]) <= ENDED_BELOW_S
 
     for i in range(1, len(trusted)):
-        t, clock = trusted[i]
-        window = [c for _, c in trusted[max(0, i - _K):i]]
+        t, clock, _, _ = trusted[i]
+        window = [c for _, c, _, _ in trusted[max(0, i - _K):i]]
         pmed = statistics.median(window)
         accepted = False
         if clock - pmed > min_jump_s:
@@ -67,7 +99,7 @@ def period_spans(reads, min_jump_s: float = 200.0, min_span_s: float = 300.0) ->
             enough_span = (t - starts[-1]) >= min_span_s
             if near_period_length and ran_down and enough_span:
                 confirm = []
-                for tt, cc in trusted[i + 1:]:
+                for tt, cc, _, _ in trusted[i + 1:]:
                     if tt <= t:
                         continue
                     if tt > t + CONFIRM_WINDOW_S:
@@ -81,10 +113,11 @@ def period_spans(reads, min_jump_s: float = 200.0, min_span_s: float = 300.0) ->
                     accepted = hits / len(confirm) >= 0.7
         if accepted:
             starts.append(t)
-            since_clocks = [clock]
+            since_clocks = [clock] if _score_consistent(trusted, i) else []
             ran_down = False
         else:
-            since_clocks.append(clock)
+            if _score_consistent(trusted, i):
+                since_clocks.append(clock)
             if len(since_clocks) >= _K and statistics.median(since_clocks[-_K:]) <= ENDED_BELOW_S:
                 ran_down = True
 

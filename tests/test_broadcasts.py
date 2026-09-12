@@ -33,6 +33,8 @@ def test_unknown_layout_raises():
     # every scale. They pass via ocr_digits' glyph-at-a-time fallback.
     ("cw_wake_2500.jpg", "cw", 724, 51, 61),        # 12:04, Wake Forest 51 at Duke 61
     ("cw_wake_3500.jpg", "cw", 341, 55, 77),        # 5:41, Wake Forest 55 at Duke 77
+    ("cw_wake_990.jpg", "cw", 594, 16, 11),         # 9:54, Wake Forest 16 at Duke 11 —
+                                                     # one-digit minutes
     ("cbssn_army.jpg", "cbssn", 424, 29, 20),       # 7:04, Duke 29 at Army 20
 ])
 def test_layouts_read_the_fixture_frames(name, layout, clock, away, home):

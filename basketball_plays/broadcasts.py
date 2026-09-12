@@ -45,10 +45,13 @@ LAYOUTS: dict[str, Layout] = {
     # them, so away and home were widened (and trimmed vertically, off the bar's edges) against
     # cw_wake_1500/2500/3500.jpg. All four fixtures now read correctly — two of them only via
     # scoreboard.ocr_digits' glyph-at-a-time fallback, because this bar's condensed italic digits
-    # defeat whole-crop OCR at every page-segmentation mode.
-    "cw": Layout("cw", {"away": (545, 652, 615, 694), "clock": (975, 652, 1045, 695),
+    # defeat whole-crop OCR at every page-segmentation mode. The clock region's left edge is 985,
+    # not 975: at 975 it clips in the tail of the "1ST" label to its left, and with one-digit
+    # minutes ("9:54") that sliver becomes its own glyph, misread as a leading "1" ("19:54") —
+    # see cw_wake_990.jpg.
+    "cw": Layout("cw", {"away": (545, 652, 615, 694), "clock": (985, 652, 1045, 695),
                         "home": (878, 652, 950, 694)},
-                 note="The CW bottom bar (fixtures cw_wake.jpg, cw_wake_1500/2500/3500.jpg)"),
+                 note="The CW bottom bar (fixtures cw_wake.jpg, cw_wake_990/1500/2500/3500.jpg)"),
     # CBS Sports Network: same family as CBS but shifted, with the clock in a light grey panel
     # left of the shot clock. The NHL ticker below the bar stays out of every box.
     "cbssn": Layout("cbssn", {"away": (492, 613, 556, 661), "clock": (1038, 618, 1116, 659),

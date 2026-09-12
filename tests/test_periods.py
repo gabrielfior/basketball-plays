@@ -12,6 +12,16 @@ def countdown(t0, clock0, n):
     return [(t0 + k, clock0 - k) for k in range(n)]
 
 
+def scored(pairs):
+    return [ScoreboardRead(t=float(t), clock=c, clock_text=None, away=a, home=h)
+            for t, c, a, h in pairs]
+
+
+def scored_countdown(t0, clock0, n, away, home):
+    """[(t, clock, away, home)] counting down one second at a time, constant scores."""
+    return [(t0 + k, clock0 - k, away, home) for k in range(n)]
+
+
 def test_two_halves_are_split_where_the_clock_jumps_back_up():
     rs = reads(countdown(0, 1200, 60) + countdown(1140, 60, 60) +
                countdown(1400, 1200, 60) + countdown(2540, 60, 60))
@@ -48,3 +58,20 @@ def test_overtime_is_a_third_span():
 def test_untrusted_reads_are_ignored():
     rs = reads([(0, 1200), (1, None), (2, None), (3, 1197)])
     assert len(P.period_spans(rs)) == 1
+
+
+def test_stray_graphic_reads_with_garbage_scores_do_not_fake_a_run_down():
+    rs = scored(scored_countdown(0, 1200, 700, 30, 40) +
+               [(701, 2.9, 1, 10), (702, 1.1, 3, None), (703, 1.5, None, 829)] +
+               scored_countdown(704, 328, 200, 30, 40))
+    spans = P.period_spans(rs)
+    assert len(spans) == 1
+
+
+def test_a_real_period_end_with_consistent_scores_still_counts():
+    rs = scored(scored_countdown(0, 1200, 700, 30, 40) +
+               [(701, 2.9, 30, 40), (702, 1.1, 30, 40), (703, 1.5, 30, 40)] +
+               scored_countdown(704, 1200, 200, 30, 40))
+    spans = P.period_spans(rs)
+    assert [s.period for s in spans] == [1, 2]
+    assert spans[1].t_lo == 704.0

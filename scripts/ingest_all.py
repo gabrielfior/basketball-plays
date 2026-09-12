@@ -29,7 +29,10 @@ FIRST_PER_LAYOUT = {
 # Wave 1 of the phase-1B batch: Indiana State, then the Florida State (cbs) and Siena (ncaa)
 # layout games so a layout bug surfaces before the big ESPN-layout run.
 WAVE1 = ["401817231", "401820644", "401856478"]
-MIN_FREE_GB = 20
+# With --prune-video, the peak per-game footprint (one video plus its raw/derived outputs
+# before the video is deleted) is about 2.5 GB, so 10 GB free is a safe floor; --min-free-gb
+# overrides it for a run without pruning, or a smaller disk.
+MIN_FREE_GB = 10
 DEFAULT_GAME_TIMEOUT = 4 * 3600
 PROGRESS_EVERY_S = 60
 COST_RE = re.compile(r"estimated cost: .* = \$([0-9.]+)")
@@ -138,6 +141,8 @@ def main() -> None:
                      help=f"shortcut for --only {','.join(WAVE1)}")
     ap.add_argument("--max-games", type=int, default=None)
     ap.add_argument("--max-total-cost", type=float, default=160.0)
+    ap.add_argument("--min-free-gb", type=float, default=MIN_FREE_GB,
+                     help="stop before starting a game below this much free disk")
     ap.add_argument("--game-timeout", type=float, default=DEFAULT_GAME_TIMEOUT,
                      help="seconds before a stuck ingest_game.py subprocess is killed")
     ap.add_argument("--prune-video", action="store_true")
@@ -169,7 +174,7 @@ def main() -> None:
         if args.max_games is not None and done >= args.max_games:
             break
         free_gb = shutil.disk_usage(".").free / 1e9
-        if free_gb < MIN_FREE_GB:
+        if free_gb < args.min_free_gb:
             print(f"stop: only {free_gb:.1f} GB free")
             break
         if total >= args.max_total_cost:

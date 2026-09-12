@@ -45,13 +45,14 @@ def run(cmd: list[str], dry: bool) -> None:
 
 def step_download(game, paths, dry):
     paths.root.mkdir(parents=True, exist_ok=True)
-    run(["uvx", "yt-dlp", "-f", YTDLP_FORMAT, "--merge-output-format", "mp4", "-o", str(paths.video),
-         game.youtube_url], dry)
+    run(["uvx", "yt-dlp", "-f", YTDLP_FORMAT, "--merge-output-format", "mp4",
+         "-o", str(paths.video), game.youtube_url], dry)
 
 
 def step_gpu(game, paths, dry, max_cost):
-    run(["uv", "run", "modal", "run", "modal_app.py", "--video", str(paths.video), "--game", game.espn_id,
-         "--end", "-1", "--out-dir", str(paths.raw_dir), "--max-cost", str(max_cost)], dry)
+    run(["uv", "run", "modal", "run", "modal_app.py", "--video", str(paths.video),
+         "--game", game.espn_id, "--end", "-1", "--out-dir", str(paths.raw_dir),
+         "--max-cost", str(max_cost)], dry)
 
 
 def step_espn(game, paths, dry):
@@ -85,8 +86,9 @@ def step_annotate(game, paths, dry):
     info = gameinfo.from_summary(summary)
     spans = P.period_spans(sb.load_timeline(paths.scoreboard_raw))
     for span in spans:
-        run(["uv", "run", "python", "scripts/annotate_outcomes.py", str(paths.video), str(paths.trajectories),
-             "--skip-ocr", "--raw-ocr", str(paths.scoreboard_raw), "--espn-cache", str(paths.espn_summary),
+        run(["uv", "run", "python", "scripts/annotate_outcomes.py",
+             str(paths.video), str(paths.trajectories), "--skip-ocr",
+             "--raw-ocr", str(paths.scoreboard_raw), "--espn-cache", str(paths.espn_summary),
              "--period", str(span.period), "--t-lo", str(span.t_lo), "--t-hi", str(span.t_hi)], dry)
     print(f"annotated {len(spans)} periods for {info.home} vs {info.away}")
 
@@ -123,19 +125,26 @@ def step_halfcourt(game, paths, dry):
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = argparse.ArgumentParser(description=__doc__,
+                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("espn_id")
     ap.add_argument("--steps", default=",".join(STEPS))
-    ap.add_argument("--force", default="", help="comma-separated steps to redo even if output exists")
+    ap.add_argument("--force", default="",
+                     help="comma-separated steps to redo even if output exists")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--max-cost", type=float, default=10.0)
     args = ap.parse_args()
     game = get_game(args.espn_id)
     paths = GamePaths.for_game(game.espn_id)
     force = set(args.force.split(",")) - {""}
-    outputs = {"download": paths.video, "gpu": paths.raw_dir / "frames_00.jsonl", "extract": paths.trajectories,
-               "ocr": paths.scoreboard_raw, "espn": paths.espn_summary, "annotate": None, "halfcourt": paths.halfcourt}
+    # annotate has no single output file to check: its output is trajectories.jsonl, which
+    # already exists after extract, so it always runs (cheap, uses --skip-ocr).
+    outputs = {"download": paths.video, "gpu": paths.raw_dir / "frames_00.jsonl",
+               "extract": paths.trajectories, "ocr": paths.scoreboard_raw,
+               "espn": paths.espn_summary, "annotate": None, "halfcourt": paths.halfcourt}
     for step in args.steps.split(","):
+        if step not in outputs:
+            raise SystemExit(f"unknown step {step!r}; choose from {', '.join(STEPS)}")
         out = outputs[step]
         if out is not None and out.exists() and step not in force:
             print(f"skip {step}: {out} exists")

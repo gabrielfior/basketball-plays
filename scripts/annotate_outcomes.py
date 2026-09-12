@@ -36,9 +36,9 @@ def main() -> None:
     ap.add_argument("--max-dt", type=float, default=15.0, help="how far to look for a trusted clock read")
     ap.add_argument("--period", type=int, default=1, help="ESPN period number to annotate against")
     ap.add_argument("--t-lo", type=float, default=None,
-                    help="restrict annotation to possessions/reads overlapping [t-lo, t-hi] (video seconds)")
+                    help="restrict to possessions/reads overlapping [t-lo, t-hi] (video seconds)")
     ap.add_argument("--t-hi", type=float, default=None,
-                    help="restrict annotation to possessions/reads overlapping [t-lo, t-hi] (video seconds)")
+                    help="restrict to possessions/reads overlapping [t-lo, t-hi] (video seconds)")
     args = ap.parse_args()
 
     possessions = read_possessions(args.trajectories)
@@ -57,8 +57,9 @@ def main() -> None:
 
     span = args.t_lo is not None and args.t_hi is not None
     raw_for_clean = [r for r in raw if args.t_lo <= r.t <= args.t_hi] if span else raw
-    targets = [p for p in possessions if p.start_time <= args.t_hi and p.end_time >= args.t_lo] if span \
-        else possessions
+    targets = possessions
+    if span:
+        targets = [p for p in possessions if p.start_time <= args.t_hi and p.end_time >= args.t_lo]
 
     reads = sb.clean_timeline(raw_for_clean, valid_states=pbp.score_states(events))
     print(f"scoreboard: {len(reads)} reads, clock trusted on {sum(r.clock is not None for r in reads) / len(reads):.0%}, "

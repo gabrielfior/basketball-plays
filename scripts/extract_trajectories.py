@@ -1,7 +1,14 @@
 """Generate trajectories.jsonl (possessions with player and ball court trajectories) from a video.
 
-Stage A (GPU, Modal) writes per-frame detections to data/raw/; Stage B (local) turns them into
-possessions. Run both:
+Stage A (GPU, Modal) writes per-frame detections to data/games/<id>/raw/ (or data/raw/ for the
+legacy default game); Stage B (local) turns them into possessions. Run both, for one game in the
+27-game set:
+
+    uv run python scripts/extract_trajectories.py data/games/401817238/video.mp4 --game 401817238 \\
+        --rosters-from data/games/401817238/espn_summary.json
+
+Or the original single-game (legacy) invocation, still supported with `--game` left at its
+"default" value:
 
     uv run python scripts/extract_trajectories.py data/duke_michigan_q1.mp4 --end 2135 --out data/trajectories.jsonl
 
@@ -28,12 +35,10 @@ from basketball_plays.rosters import DUKE, MICHIGAN
 from basketball_plays.schema import read_frames, write_jsonl
 
 
-def run_gpu_stage(video: str, game: str | None, start: float, end: float, fps: float, raw_dir: str,
+def run_gpu_stage(video: str, game: str, start: float, end: float, fps: float, raw_dir: str,
                    skip_upload: bool) -> None:
-    cmd = ["uv", "run", "modal", "run", "modal_app.py", "--video", video, "--start", str(start), "--end", str(end),
-           "--fps", str(fps), "--out-dir", raw_dir]
-    if game:
-        cmd += ["--game", game]
+    cmd = ["uv", "run", "modal", "run", "modal_app.py", "--video", video, "--game", game,
+           "--start", str(start), "--end", str(end), "--fps", str(fps), "--out-dir", raw_dir]
     if skip_upload:
         cmd.append("--skip-upload")
     env = {**os.environ, "MODAL_IMAGE_BUILDER_VERSION": os.environ.get("MODAL_IMAGE_BUILDER_VERSION", "2025.06")}
@@ -47,7 +52,9 @@ DEFAULT_END = 2135.0  # legacy default (35:35), overridden to the whole video wh
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("video")
-    ap.add_argument("--game", help="ESPN game id; defaults --raw-dir/--out to data/games/<id>/...")
+    ap.add_argument("--game", default="default",
+                    help="ESPN game id; defaults --raw-dir/--out to data/games/<id>/... "
+                         "('default' keeps the legacy data/raw, data/trajectories.jsonl paths)")
     ap.add_argument("--start", type=float, default=0.0, help="clip start in seconds")
     ap.add_argument("--end", type=float, default=DEFAULT_END, help="clip end in seconds (35:35)")
     ap.add_argument("--fps", type=float, default=10.0, help="sampling rate for perception")
@@ -65,12 +72,15 @@ def main() -> None:
                     help="rejoin same-half runs separated by at most this many seconds (replays)")
     args = ap.parse_args()
 
-    game_paths = GamePaths.for_game(args.game) if args.game else None
+    is_legacy = args.game == "default"
+    game_paths = None if is_legacy else GamePaths.for_game(args.game)
     raw_dir_str = args.raw_dir or (str(game_paths.raw_dir) if game_paths else "data/raw")
     out = args.out or (str(game_paths.trajectories) if game_paths else "data/trajectories.jsonl")
 
     if not args.skip_gpu:
-        gpu_end = -1.0 if (args.game and args.end == DEFAULT_END) else args.end
+        # An explicit `--end 2135` is indistinguishable from the untouched default and is also
+        # treated as "use the whole video" once a real --game is given.
+        gpu_end = -1.0 if (not is_legacy and args.end == DEFAULT_END) else args.end
         run_gpu_stage(args.video, args.game, args.start, gpu_end, args.fps,
                       raw_dir_str, args.skip_upload)
 

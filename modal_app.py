@@ -2,6 +2,10 @@
 
     modal run modal_app.py --video data/duke_michigan_q1.mp4 --game 401817238 --fps 10
 
+`--game` defaults to "default" for legacy (single-game) runs, e.g.
+
+    modal run modal_app.py --video data/duke_michigan_q1.mp4 --end 2135 --fps 10
+
 Uploads the video to a per-game path on a Modal Volume (/vol/games/<game>/...), fits the team
 classifier once, then processes 5-minute chunks in parallel. `--end` defaults to the video's
 duration (via ffprobe), so the whole video is processed unless `--end` is given. Prints an
@@ -253,7 +257,7 @@ def process_chunk(
 @app.local_entrypoint()
 def main(
     video: str,
-    game: str,
+    game: str = "default",
     start: float = 0.0,
     end: float = -1.0,
     fps: float = 10.0,

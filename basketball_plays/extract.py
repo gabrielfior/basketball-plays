@@ -20,6 +20,11 @@ from basketball_plays.schema import (
 )
 from basketball_plays.stitch import RawTrack, stitch_tracks
 
+# A track's jersey reads must clear this many plurality votes against one team's roster, with
+# zero votes against the other, before they override the appearance cluster's team assignment
+# (see reassign_team_by_jersey). Below this, appearance clustering wins.
+MIN_TEAM_VOTES = 2
+
 
 @dataclass
 class ProjectedFrame:
@@ -149,6 +154,26 @@ def enforce_team_cap(players: list[PlayerTrack], max_players: int = 5,
     return players
 
 
+def reassign_team_by_jersey(
+    candidates_reads: list[str], team: str | None, rosters: dict[str, dict[str, str]],
+    home_team: str, away_team: str,
+) -> str | None:
+    """Override a track's cluster-derived team when its jersey reads unambiguously favor the
+    other roster. Appearance clustering merges the two uniforms poorly on some broadcasts
+    (e.g. the Florida game), mislabeling named players and inflating the anonymous-surplus
+    count that enforce_team_cap then demotes. A number shared by both rosters can never tip
+    the vote for either side, since it counts toward both; only a team-exclusive number (or a
+    plurality of reads clearing MIN_TEAM_VOTES) can flip the assignment, and only when the
+    other team has zero matching votes."""
+    home_votes = identity.jersey_votes(candidates_reads, rosters.get(home_team, {}))[1]
+    away_votes = identity.jersey_votes(candidates_reads, rosters.get(away_team, {}))[1]
+    if home_votes >= MIN_TEAM_VOTES and away_votes == 0:
+        return home_team
+    if away_votes >= MIN_TEAM_VOTES and home_votes == 0:
+        return away_team
+    return team
+
+
 def attach_holding(players: list[PlayerTrack], frames: list[FrameRecord]) -> None:
     """Fill PlayerTrack.holding with the times the detector flagged the track's box as
     player-in-possession. Boxes are matched on (time, rounded bbox) because stitching renames
@@ -272,6 +297,8 @@ def build_possessions(
             a, b = tr.frames[0], tr.frames[-1]
             team = names.get(tr.cluster) if tr.cluster is not None else None
             member_reads = [r for m in tr.members for r in reads.get(m, [])]
+            team = reassign_team_by_jersey(
+                member_reads, team, rosters or ROSTERS, home_team, away_team)
             jersey, votes = identity.jersey_votes(
                 member_reads, (rosters or ROSTERS).get(team, {})) if team else (None, 0)
             candidates.append({"id": tr.track_id, "team": team, "jersey": jersey, "votes": votes,

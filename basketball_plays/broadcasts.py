@@ -40,10 +40,14 @@ LAYOUTS: dict[str, Layout] = {
                    note="NCAA tournament bottom bar (fixture ncaa_bar_siena_1800.jpg), falling "
                         "back to the stacked box (fixture ncaa_siena.jpg)"),
     # The CW: bottom bar sitting lower in the frame than the others; the home score is on a
-    # narrow blue panel, so its box stays inside that panel.
-    "cw": Layout("cw", {"away": (548, 650, 615, 696), "clock": (975, 652, 1045, 695),
-                        "home": (884, 651, 946, 696)},
-                 note="The CW bottom bar (fixture cw_wake.jpg)"),
+    # narrow blue panel. The boxes were first measured on a first-half frame, where both scores
+    # are single digits; on full-game frames the tens digit of a two-digit score fell outside
+    # them, so away and home were widened (and trimmed vertically, off the bar's edges) against
+    # cw_wake_1500/2500/3500.jpg. The crops now hold both digits on all four fixtures, but
+    # tesseract still drops a digit on two of them (see tests/test_broadcasts.py).
+    "cw": Layout("cw", {"away": (545, 652, 615, 694), "clock": (975, 652, 1045, 695),
+                        "home": (878, 652, 950, 694)},
+                 note="The CW bottom bar (fixtures cw_wake.jpg, cw_wake_1500.jpg)"),
     # CBS Sports Network: same family as CBS but shifted, with the clock in a light grey panel
     # left of the shot clock. The NHL ticker below the bar stays out of every box.
     "cbssn": Layout("cbssn", {"away": (492, 613, 556, 661), "clock": (1038, 618, 1116, 659),

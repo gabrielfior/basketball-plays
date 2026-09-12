@@ -109,12 +109,7 @@ def parse_clock(text: str) -> tuple[float | None, str | None]:
     return cands[0] if cands else (None, None)
 
 
-def read_frame(frame: np.ndarray, t: float, regions: dict | None = None,
-               invert: bool = False) -> ScoreboardRead:
-    """OCR one frame's scoreboard. `regions` defaults to the ESPN boxes; `invert` flips the
-    crop first, for layouts whose digits sit on a busy light ground."""
-    regions = REGIONS if regions is None else regions
-
+def _read_regions(frame: np.ndarray, t: float, regions: dict, invert: bool) -> ScoreboardRead:
     def crop(key):
         x1, y1, x2, y2 = regions[key]
         c = frame[y1:y2, x1:x2]
@@ -126,8 +121,31 @@ def read_frame(frame: np.ndarray, t: float, regions: dict | None = None,
                           home=parse_score(ocr_digits(crop("home"))))
 
 
-def _read_times(args: tuple[str, list[float], dict, bool]) -> list[ScoreboardRead]:
-    video, times, regions, invert = args
+def read_frame(frame: np.ndarray, t: float, regions: dict | None = None,
+               invert: bool = False,
+               alternatives: tuple[dict, ...] = ()) -> ScoreboardRead:
+    """OCR one frame's scoreboard. `regions` defaults to the ESPN boxes; `invert` flips the
+    crop first, for layouts whose digits sit on a busy light ground.
+
+    When `regions` doesn't yield a parseable clock, each of `alternatives` is tried in order
+    (a broadcast that alternates between two scoreboard graphics) and the first whose clock
+    parses is kept, with the scores read from that same alternative's regions.
+    """
+    regions = REGIONS if regions is None else regions
+    result = _read_regions(frame, t, regions, invert)
+    if result.clock is not None:
+        return result
+    for alt in alternatives:
+        alt_result = _read_regions(frame, t, alt, invert)
+        if alt_result.clock is not None:
+            return alt_result
+    return result
+
+
+def _read_times(
+    args: tuple[str, list[float], dict, bool, tuple[dict, ...]],
+) -> list[ScoreboardRead]:
+    video, times, regions, invert, alternatives = args
     cap = cv2.VideoCapture(video)
     fps = cap.get(cv2.CAP_PROP_FPS) or 60.0
     out = []
@@ -138,7 +156,8 @@ def _read_times(args: tuple[str, list[float], dict, bool]) -> list[ScoreboardRea
             if ok:
                 if frame.shape[1] != 1280 or frame.shape[0] != 720:
                     frame = cv2.resize(frame, (1280, 720))
-                out.append(read_frame(frame, float(t), regions=regions, invert=invert))
+                out.append(read_frame(frame, float(t), regions=regions, invert=invert,
+                                      alternatives=alternatives))
     finally:
         cap.release()
     return out
@@ -159,7 +178,7 @@ def read_timeline(video: str, start_s: float, end_s: float, every_s: float = 1.0
     lay = get_layout(layout)
     times = [float(t) for t in np.arange(start_s, end_s, every_s)]
     chunks = [times[i::workers] for i in range(workers)]
-    args = [(video, c, lay.regions, lay.invert) for c in chunks if c]
+    args = [(video, c, lay.regions, lay.invert, lay.alternatives) for c in chunks if c]
     with ThreadPoolExecutor(max_workers=workers) as ex:
         results = list(ex.map(_read_times, args))
     return sorted((r for rs in results for r in rs), key=lambda r: r.t)

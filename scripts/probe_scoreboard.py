@@ -53,14 +53,25 @@ def main() -> None:
         sys.exit("could not read a frame")
     frame = cv2.resize(frame, (1280, 720))
     if args.regions:  # an override measures a layout that is not registered yet
-        regions, invert = parse_regions(args.regions), args.invert
+        regions, invert, alternatives = parse_regions(args.regions), args.invert, ()
     else:
         lay = B.get_layout(args.layout)
-        regions, invert = lay.regions, args.invert or lay.invert
-    read = sb.read_frame(frame, args.t, regions=regions, invert=invert)
-    print(f"clock={read.clock_text!r} ({read.clock}) away={read.away} home={read.home}")
+        regions, invert, alternatives = lay.regions, args.invert or lay.invert, lay.alternatives
+    read = sb.read_frame(frame, args.t, regions=regions, invert=invert, alternatives=alternatives)
+    # Re-derive which region set actually produced the read (primary, or which alternative), so
+    # the debug crops below are drawn from the regions that were used, not always the primary.
+    candidates = (regions, *alternatives)
+    used_idx, used_regions = None, regions
+    for i, rs in enumerate(candidates):
+        if sb.read_frame(frame, args.t, regions=rs, invert=invert).clock is not None:
+            used_idx, used_regions = i, rs
+            break
+    which = "primary" if used_idx == 0 else (
+        f"alternative {used_idx}" if used_idx is not None else "none (clock unreadable)")
+    print(f"clock={read.clock_text!r} ({read.clock}) away={read.away} home={read.home} "
+          f"[{which}]")
     out_dir = Path(args.out).resolve().parent
-    for key, (x1, y1, x2, y2) in regions.items():
+    for key, (x1, y1, x2, y2) in used_regions.items():
         crop = frame[y1:y2, x1:x2]
         if invert:
             crop = cv2.bitwise_not(crop)

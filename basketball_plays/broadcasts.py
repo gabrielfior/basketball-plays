@@ -17,6 +17,9 @@ class Layout:
     regions: dict[str, Region] = field(default_factory=dict)
     invert: bool = False
     note: str = ""
+    # Region sets to fall back to (in order) when `regions` doesn't yield a parseable clock,
+    # for a broadcast that alternates between two scoreboard graphics. See scoreboard.read_frame.
+    alternatives: tuple[dict[str, Region], ...] = ()
 
 
 LAYOUTS: dict[str, Layout] = {
@@ -26,11 +29,16 @@ LAYOUTS: dict[str, Layout] = {
     "cbs": Layout("cbs", {"away": (495, 610, 560, 658), "clock": (1030, 613, 1128, 658),
                           "home": (892, 612, 958, 658)},
                   note="CBS bottom-left bar (fixture cbs_fsu.jpg)"),
-    # NCAA tournament: a stacked box at the bottom left, away team on top, home below, and a
-    # light strip under both carrying "1ST HALF" then the clock.
-    "ncaa": Layout("ncaa", {"away": (205, 483, 292, 547), "clock": (200, 635, 276, 658),
-                            "home": (205, 565, 292, 630)},
-                   note="NCAA tournament stacked box (fixture ncaa_siena.jpg)"),
+    # NCAA tournament: the broadcast alternates two graphics. Most of the time it's a bottom
+    # bar (the primary regions below); during other stretches it's a stacked box at the bottom
+    # left, away team on top, home below, and a light strip under both carrying "1ST HALF" then
+    # the clock (kept as the alternative). Neither region set reads the other graphic.
+    "ncaa": Layout("ncaa", {"away": (418, 636, 470, 676), "clock": (862, 636, 952, 676),
+                            "home": (752, 636, 806, 676)},
+                   alternatives=({"away": (205, 483, 292, 547), "clock": (200, 635, 276, 658),
+                                  "home": (205, 565, 292, 630)},),
+                   note="NCAA tournament bottom bar (fixture ncaa_bar_siena_1800.jpg), falling "
+                        "back to the stacked box (fixture ncaa_siena.jpg)"),
     # The CW: bottom bar sitting lower in the frame than the others; the home score is on a
     # narrow blue panel, so its box stays inside that panel.
     "cw": Layout("cw", {"away": (548, 650, 615, 696), "clock": (975, 652, 1045, 695),

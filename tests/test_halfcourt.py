@@ -384,6 +384,18 @@ def _still_tracks(t_start, n_frames, moving=False, n=5):
     return out
 
 
+def _mixed_tracks(t_start, n_frames, n_still, n_moving):
+    """`n_still` stationary tracks and `n_moving` moving ones, all in the frontcourt throughout
+    (the moving ones start close to the baseline so drifting at 4 ft/s never crosses half court).
+    """
+    out = []
+    for i in range(n_still + n_moving):
+        dx = 0.4 if i >= n_still else 0.02  # 4 ft/s vs 0.2 ft/s
+        rows = traj(t_start, n_frames, 5.0 + 3 * i, 5.0 + 8 * i, dx=dx)
+        out.append(H.Track(i, None, None, {r[0]: (r[1], r[2]) for r in rows}, set()))
+    return out
+
+
 def test_still_players_counts_visible_and_still():
     assert H.still_players(_still_tracks(100.0, 10), 100.9) == (5, 5)
     assert H.still_players(_still_tracks(100.0, 10, moving=True), 100.9) == (5, 0)
@@ -454,6 +466,26 @@ def test_find_setup_without_a_still_frame_flags_no_setup():
     tracks = _still_tracks(100.0, 60, moving=True)
     assert H.find_setup(tracks, {}, "live", 99.0, 100.0, 115.0) == (100.0, True)
     assert H.find_setup(tracks, {}, "ato", 99.0, 100.0, 115.0) == (100.0, True)
+
+
+def test_find_setup_four_visible_three_still_finds_a_setup():
+    # four players visible, one of them moving throughout (an inbounder or a cutter): still
+    # enough per the 2026-09-12 rule (>= 3 of >= 4 visible)
+    tracks = _mixed_tracks(96.0, 60, n_still=3, n_moving=1)  # still from 96.0 to 101.9
+    setup, no_setup = H.find_setup(tracks, {}, "dead", t_start=100.0, t0=100.4, t_end=115.0)
+    assert (setup, no_setup) == (101.5, False)   # end of the [t_start - 3, t_start + 1.5] search
+
+
+def test_find_setup_four_visible_two_still_flags_no_setup():
+    # four visible but only two still: short of MIN_STILL_PLAYERS, no setup frame anywhere
+    tracks = _mixed_tracks(96.0, 60, n_still=2, n_moving=2)
+    assert H.find_setup(tracks, {}, "dead", t_start=100.0, t0=100.4, t_end=115.0) == (100.4, True)
+
+
+def test_find_setup_three_visible_all_still_flags_no_setup():
+    # only three players visible at all: short of MIN_VISIBLE_PLAYERS even though all are still
+    tracks = _still_tracks(96.0, 60, n=3)
+    assert H.find_setup(tracks, {}, "dead", t_start=100.0, t0=100.4, t_end=115.0) == (100.4, True)
 
 
 def test_build_records_end_to_end_on_a_synthetic_possession():

@@ -296,7 +296,8 @@ def clock_to_video(reads, clock: float, mode: str,
     return round(float(t_hi + frac * (t_lo - t_hi)), 2)
 
 
-MIN_STILL_PLAYERS = 4
+MIN_VISIBLE_PLAYERS = 4  # merged Duke positions visible, and in the frontcourt, for a setup frame
+MIN_STILL_PLAYERS = 3  # of those visible, at least this many must be still (see 2026-09-12 note)
 STILL_FT = 1.5  # a player is still when it moved less than this over 0.5 s (jitter floor ~0.6 ft)
 MERGE_FT = 1.0  # two track ids within this distance at one instant are the same player
 MAX_PLAYERS = 5  # a team never has more than five players on the floor
@@ -488,36 +489,45 @@ def frontcourt_players(tracks: list[Track], t: float) -> int:
 
 
 def _is_still_frame(tracks: list[Track], t: float, max_move_ft: float = STILL_FT,
-                     min_players: int = MIN_STILL_PLAYERS) -> bool:
+                     min_visible: int = MIN_VISIBLE_PLAYERS,
+                     min_still: int = MIN_STILL_PLAYERS) -> bool:
     """A candidate setup frame: enough players visible, enough of them still, and enough of them
     in the frontcourt (a still backcourt lineup waiting to inbound is not a setup)."""
     visible, still = still_players(tracks, t, max_move_ft=max_move_ft)
-    if visible < min_players or still < min_players:
+    if visible < min_visible or still < min_still:
         return False
-    return frontcourt_players(tracks, t) >= min_players
+    return frontcourt_players(tracks, t) >= min_visible
 
 
 def find_setup(tracks: list[Track], handler: dict[float, tuple[float, float]], start_type: str,
                t_start: float, t0: float, t_end: float, full_court: bool = False,
                fps: float = 10.0, max_move_ft: float = STILL_FT,
-               min_players: int = MIN_STILL_PLAYERS) -> tuple[float, bool]:
+               min_visible: int = MIN_VISIBLE_PLAYERS, min_still: int = MIN_STILL_PLAYERS,
+               min_players: int | None = None) -> tuple[float, bool]:
     """(setup_time, no_setup) per the spec's setup-frame rule.
 
     The dead-ball window around `t_start` only applies to a sideline or baseline inbound in the
     frontcourt. A `full_court` dead start (after the opponent scored) inbounds from the team's
     own baseline, so the lineup around `t_start` is a backcourt one and the live rule from `t0`
     is used instead.
+
+    `min_players`, when given, overrides both `min_visible` and `min_still` (used by the spike
+    script's sensitivity table, which sweeps a single threshold for both).
     """
+    if min_players is not None:
+        min_visible = min_still = min_players
     times = _times(tracks)
     if start_type in (DEAD, ATO) and not full_court:
         lo, hi = t_start + DEAD_SEARCH[0], t_start + DEAD_SEARCH[1]
         cands = [t for t in times
-                 if lo <= t <= hi and _is_still_frame(tracks, t, max_move_ft, min_players)]
+                 if lo <= t <= hi and _is_still_frame(tracks, t, max_move_ft, min_visible,
+                                                       min_still)]
         if cands:
             return cands[-1], False
     hi = min(t0 + LIVE_SEARCH_S, t_end)
     for t in times:
-        if not t0 <= t <= hi or not _is_still_frame(tracks, t, max_move_ft, min_players):
+        if not t0 <= t <= hi or not _is_still_frame(tracks, t, max_move_ft, min_visible,
+                                                      min_still):
             continue
         h = handler.get(round(t, 3))
         if h is not None and float(zones.rim_distance(np.array([h]))[0]) <= ARC_FT:

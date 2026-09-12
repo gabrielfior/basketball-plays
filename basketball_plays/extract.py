@@ -74,6 +74,20 @@ def offense_votes(projected: list[ProjectedFrame], states: list[possessions.Fram
     return votes
 
 
+def offense_votes_by_frame(
+    projected: list[ProjectedFrame], states: list[possessions.FrameState]
+) -> dict[int, list[int]]:
+    """Team clusters holding the ball in each frame, keyed by position into `states`."""
+    votes: dict[int, list[int]] = defaultdict(list)
+    for i, (pf, st) in enumerate(zip(projected, states)):
+        if not st.valid or st.action_half is None:
+            continue
+        for d in pf.players:
+            if d.cls == CLS_PLAYER_IN_POSSESSION and d.team_cluster is not None:
+                votes[i].append(int(d.team_cluster))
+    return dict(votes)
+
+
 def track_clusters(projected: list[ProjectedFrame]) -> dict[int, int]:
     """Majority team cluster per track id over the whole clip."""
     votes: dict[int, Counter] = defaultdict(Counter)
@@ -178,7 +192,15 @@ def build_possessions(
     segments = possessions.segment(states, fps, min_duration=min_duration,
                                    min_flip_duration=min_flip_duration, max_gap=max_gap,
                                    merge_same_half_gap=merge_same_half_gap)
-    offense_map = possessions.learn_offense_map(offense_votes(projected, states))
+    global_offense_map = possessions.learn_offense_map(offense_votes(projected, states))
+    votes_by_frame = offense_votes_by_frame(projected, states)
+    # A segment's own player-in-possession votes are noisy on real broadcast footage (appearance
+    # clustering regularly tags the defender, not the ball handler): on the Michigan first half,
+    # trusting any segment with >= 5 own votes (the segment_offense default) flipped ~25 of 80
+    # possessions that the whole-period vote count got right. Requiring ~20s of votes routes
+    # almost all segments through the time-windowed fallback instead, which still resolves a
+    # true halftime flip correctly since the two halves are far more than window_s apart.
+    offense_min_votes = round(20 * fps)
     names = resolve_team_names(projected, frames, cluster_brightness or {}, team_map,
                                home_team=home_team, away_team=away_team, rosters=rosters)
     clusters = track_clusters(projected)
@@ -247,7 +269,9 @@ def build_possessions(
             ball_out = [[round(float(times[k]), 3), round(float(cleaned[k, 0]), 2),
                          round(float(cleaned[k, 1]), 2)] for k in ball_t]
 
-        offense_cluster = offense_map.get(seg.half)
+        offense_cluster = possessions.segment_offense(
+            votes_by_frame, seg, states, segments, min_votes=offense_min_votes,
+            global_map=global_offense_map)
         out.append(Possession(
             possession_id=pid,
             start_time=round(float(times[0]), 3),

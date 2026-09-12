@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import dataclass
 
 import numpy as np
@@ -128,3 +129,40 @@ def learn_offense_map(votes: list[tuple[int, int]]) -> dict[int, int]:
     if option_a >= option_b:
         return {RIGHT: 1, LEFT: 0}
     return {RIGHT: 0, LEFT: 1}
+
+
+def segment_offense(
+    votes_by_frame: dict[int, list[int]],
+    seg: Segment,
+    states: list[FrameState],
+    all_segments: list[Segment],
+    min_votes: int = 5,
+    window_s: float = 300.0,
+    global_map: dict[int, int] | None = None,
+) -> int | None:
+    """Decide which team cluster is on offense for one segment.
+
+    Teams switch baskets at half time, so a whole-game offense map (`learn_offense_map` over
+    every vote in the video) can be wrong within a single period. Prefer this segment's own
+    `player-in-possession` votes; if there are too few (or they tie), borrow votes from segments
+    whose time span lies within `window_s` seconds of this one's; if that is still too few, fall
+    back to a caller-supplied whole-game map.
+    """
+    own_votes = [c for i in seg.frame_indices for c in votes_by_frame.get(i, [])]
+    if len(own_votes) >= min_votes:
+        ranked = Counter(own_votes).most_common()
+        if len(ranked) == 1 or ranked[0][1] != ranked[1][1]:
+            return ranked[0][0]
+
+    t0 = states[seg.frame_indices[0]].t
+    t1 = states[seg.frame_indices[-1]].t
+    nearby_votes: list[tuple[int, int]] = []
+    for other in all_segments:
+        ot0 = states[other.frame_indices[0]].t
+        ot1 = states[other.frame_indices[-1]].t
+        if ot0 <= t1 + window_s and ot1 >= t0 - window_s:
+            for i in other.frame_indices:
+                nearby_votes.extend((other.half, c) for c in votes_by_frame.get(i, []))
+    if len(nearby_votes) >= min_votes:
+        return learn_offense_map(nearby_votes).get(seg.half)
+    return global_map.get(seg.half) if global_map is not None else None

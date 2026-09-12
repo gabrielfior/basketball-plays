@@ -12,6 +12,8 @@ dependencies = [
     "tqdm>=4.66",
     "python-dotenv>=1.0",
     "requests>=2.32",
+    "scikit-learn>=1.5",
+    "scipy>=1.13",
 ]
 
 [dependency-groups]

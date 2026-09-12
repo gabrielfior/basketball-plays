@@ -124,17 +124,22 @@ def test_trust_rates_are_the_fractions_of_reads_that_survived_cleaning():
     assert ingest.trust_rates([]) == (0.0, 0.0)
 
 
-def test_trust_rates_must_be_computed_per_period_not_over_the_whole_game():
-    # clean_timeline enforces a non-increasing clock, so a whole-game pass throws away the
-    # second half (the clock resets at half time) and reports a far too pessimistic rate.
+def test_trust_rates_are_computed_per_period_by_cleaning_each_span_separately():
+    # step_halfcourt never cleans the whole game in one pass: for each period it slices the raw
+    # timeline down to that period's span and cleans only that slice (sb.clean_timeline tracks a
+    # single running "last", so a period boundary such as half time must be a fresh start).
     half1 = [a_read(i, clock=1200.0 - i, away=0, home=0) for i in range(600)]
     half2 = [a_read(600 + i, clock=1200.0 - i, away=0, home=0) for i in range(600)]
+    reads_raw = half1 + half2
+    spans = [(0, 599), (600, 1199)]
 
-    whole_game, _ = ingest.trust_rates(sb.clean_timeline(half1 + half2))
-    per_period = [ingest.trust_rates(sb.clean_timeline(h))[0] for h in (half1, half2)]
+    per_period = [
+        ingest.trust_rates(sb.clean_timeline([r for r in reads_raw if lo <= r.t <= hi]))
+        for lo, hi in spans
+    ]
+    expected = [ingest.trust_rates(sb.clean_timeline(h)) for h in (half1, half2)]
 
-    assert per_period == [1.0, 1.0]
-    assert whole_game < 0.6
+    assert per_period == expected == [(1.0, 1.0), (1.0, 1.0)]
 
 
 def test_game_trust_rates_weight_each_period_by_its_read_count():

@@ -211,13 +211,13 @@ def _relock(
     running clock (ticking down from ours) or, unless our candidate is an implausible drop, a
     stopped clock (frozen at ours). Returns the accepted (value, text) pair, or None.
 
-    An increase over `last` is never re-locked: the clock never legitimately increases within a
-    period, and a period boundary (e.g. half time) is handled by cleaning each period on its
-    own, not by this look-ahead.
+    This applies to increases over `last` too: recovering from a poisoned anchor (e.g. `last`
+    itself was a brief misread that the ordinary rule's neighbour check let through) is the
+    normal case this is meant to handle, not an exception. Cleaning each period's reads on their
+    own (never a whole game in one pass) is what keeps a genuine period boundary, such as half
+    time, from being re-locked onto as if it were a recovery.
     """
     c, text = cands[i][0]
-    if last is not None and c > last + 0.5:
-        return None
     is_drop = (
         last is not None
         and last_t is not None
@@ -256,13 +256,18 @@ def clean_timeline(
     that sequence, which catches systematic misreads such as 21 -> 27. The clock must be
     confirmed by a neighbour within 2 s and never increase.
 
-    When no candidate at a read passes that monotonic test, `_relock` tries to re-lock onto the
-    read's best candidate by checking the next RELOCK_K reads against it (see `_relock`). A
-    candidate that drops more than the elapsed time plus MAX_DROP_SLACK_S below the last
-    accepted clock (a stray graphic, or a replay of a much later moment) is never accepted by
-    the ordinary rule, only through that re-lock look-ahead, and then only via the running-clock
-    hypothesis: a value that stays frozen far below where the clock should be is a graphic, not
-    a genuine stoppage.
+    When no candidate at a read passes that monotonic test (a drop or an increase over `last`),
+    `_relock` tries to re-lock onto the read's best candidate by checking the next RELOCK_K reads
+    against it (see `_relock`) — this is how the cleaner recovers once `last` has been thrown off
+    by a bad read, whichever direction it was thrown. A candidate that drops more than the
+    elapsed time plus MAX_DROP_SLACK_S below the last accepted clock (a stray graphic, or a
+    replay of a much later moment) is never accepted by the ordinary rule, only through that
+    re-lock look-ahead, and then only via the running-clock hypothesis: a value that stays frozen
+    far below where the clock should be is a graphic, not a genuine stoppage.
+
+    Must be called once per period: this only tracks one running "last" value, and treats a
+    period boundary such as half time — a real, large jump in the clock — the same as any other
+    candidate to re-lock onto.
     """
     out = [ScoreboardRead(r.t, r.clock, r.clock_text, r.away, r.home) for r in reads]
     if valid_states is not None:

@@ -49,9 +49,23 @@ def _is_free_throw(e: Event) -> bool:
     return "free throw" in e.text.lower()
 
 
-def _is_last_free_throw(e: Event) -> bool:
+def _is_last_free_throw(events: list[Event], i: int) -> bool:
+    """True when events[i] is the last free throw of its trip.
+
+    ESPN's present-tense dialect spells this out ("free throw 2 of 2"); the past-tense dialect
+    never does, so fall back to structure: it is the last of the trip when the next event (other
+    than a substitution or timeout) is not another free throw by the same team at the same
+    clock.
+    """
+    e = events[i]
     m = re.search(r"free throw (\d) of (\d)", e.text.lower())
-    return bool(m) and m.group(1) == m.group(2)
+    if m:
+        return m.group(1) == m.group(2)
+    for nxt in events[i + 1:]:
+        if _is_substitution(nxt) or _is_timeout(nxt):
+            continue
+        return not (_is_free_throw(nxt) and nxt.team == e.team and nxt.clock == e.clock)
+    return True
 
 
 def _is_turnover(e: Event) -> bool:
@@ -167,7 +181,7 @@ def intervals(events: list[Event], period_length: float = 1200.0) -> list[Interv
         if _is_free_throw(e):
             if technical_pending:
                 # possession does not change on a technical foul; ignore who shoots it
-                if _is_last_free_throw(e) or "1 of 1" in e.text.lower():
+                if _is_last_free_throw(events, i):
                     open_(technical_holder, e.clock, DEAD)
                     technical_pending, technical_holder = False, None
                 continue
@@ -175,7 +189,7 @@ def intervals(events: list[Event], period_length: float = 1200.0) -> list[Interv
             # fouling team (and-one) is discarded by the zero-duration filter
             if cur is not None and cur.team != e.team:
                 cur = None
-            if (_is_last_free_throw(e) or "1 of 1" in e.text.lower()) and _is_made(e):
+            if _is_last_free_throw(events, i) and _is_made(e):
                 open_(other.get(e.team), e.clock, DEAD, full_court=True)
             continue
         if cur is not None:

@@ -33,6 +33,30 @@ class Event:
         return asdict(self)
 
 
+_ASSISTED_BY_RE = re.compile(r"\s*Assisted by (.+)\.\s*$")
+_SHOT_NOUNS = ("Three Point Jumper", "Two Point Tip Shot", "Free Throw", "Layup", "Jumper", "Dunk")
+
+
+def normalize_text(text: str) -> str:
+    """Map ESPN's past-tense play text onto the present-tense dialect every detector keys on.
+
+    Past tense: "Alex Condon missed Layup." / "Cameron Boozer made Layup. Assisted by
+    Patrick Ngongba II." Present tense: "... misses layup" / "... makes layup (X assists)".
+    Idempotent: present-tense text (already using "makes"/"misses" and inline "(X assists)")
+    passes through unchanged.
+    """
+    text = re.sub(r"\bmade\b", "makes", text, flags=re.IGNORECASE)
+    text = re.sub(r"\bmissed\b", "misses", text, flags=re.IGNORECASE)
+    m = _ASSISTED_BY_RE.search(text)
+    if m:
+        assister = m.group(1)
+        head = text[: m.start()].rstrip().removesuffix(".")
+        text = f"{head} ({assister} assists)"
+    for noun in _SHOT_NOUNS:
+        text = re.sub(re.escape(noun), noun.lower(), text, flags=re.IGNORECASE)
+    return text
+
+
 def clock_to_seconds(text: str) -> float | None:
     text = text.strip()
     m = re.fullmatch(r"(\d{1,2}):(\d{2})", text)
@@ -73,7 +97,7 @@ def parse_events(plays: list[dict], period: int = 1,
         out.append(Event(
             clock_text=clock_text, clock=clock,
             team=team_by_id.get(str(p.get("team", {}).get("id"))),
-            type=p.get("type", {}).get("text", ""), text=p.get("text", ""),
+            type=p.get("type", {}).get("text", ""), text=normalize_text(p.get("text", "")),
             scoring=bool(p.get("scoringPlay")), score_value=int(p.get("scoreValue") or 0),
             away_score=int(p.get("awayScore") or 0), home_score=int(p.get("homeScore") or 0),
         ))

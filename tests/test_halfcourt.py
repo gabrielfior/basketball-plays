@@ -194,6 +194,62 @@ def test_technical_foul_keeps_possession_through_the_free_throw():
     assert ivs[1] == (D, 360, 350, "dead", "shot", False)
 
 
+def test_is_last_free_throw_falls_back_to_structure_without_an_n_of_m_text():
+    # normalized past-tense free throws never say "N of M"; the last of a trip is decided by
+    # whether the next (non-sub, non-timeout) event is another free throw by the same team at
+    # the same clock
+    events = [
+        ev("18:30", D, "MadeFreeThrow", "Caleb Foster makes free throw"),
+        ev("18:30", D, "MadeFreeThrow", "Caleb Foster misses free throw"),
+        ev("18:20", M, "Defensive Rebound", "Aday Mara Defensive Rebound."),
+    ]
+    assert H._is_last_free_throw(events, 0) is False
+    assert H._is_last_free_throw(events, 1) is True
+
+
+def test_is_last_free_throw_structural_fallback_skips_subs_and_timeouts():
+    events = [
+        ev("18:30", D, "MadeFreeThrow", "Caleb Foster makes free throw"),
+        ev("18:30", D, "Substitution", "Cayden Boozer subbing in for Duke"),
+        ev("18:30", D, "MadeFreeThrow", "Caleb Foster makes free throw"),
+        ev("18:20", M, "Defensive Rebound", "Aday Mara Defensive Rebound."),
+    ]
+    assert H._is_last_free_throw(events, 0) is False
+    assert H._is_last_free_throw(events, 2) is True
+
+
+def test_is_last_free_throw_a_single_trip_free_throw_with_nothing_after_it_is_last():
+    events = [ev("7:10", M, "MadeFreeThrow", "Yaxel Lendeborg misses free throw")]
+    assert H._is_last_free_throw(events, 0) is True
+
+
+def test_is_last_free_throw_still_prefers_the_explicit_n_of_m_text_when_present():
+    events = [
+        ev("18:30", D, "MadeFreeThrow", "Caleb Foster makes free throw 1 of 2"),
+        ev("18:30", D, "MadeFreeThrow", "Caleb Foster misses free throw 2 of 2"),
+    ]
+    assert H._is_last_free_throw(events, 0) is False
+    assert H._is_last_free_throw(events, 1) is True
+
+
+def test_normalized_past_tense_free_throw_trip_still_opens_a_full_court_interval():
+    # a made last free throw (no "N of M" in the text) still opens the opponent's full-court
+    # interval, same as the present-tense "free throw 2 of 2" case
+    events = [
+        ev("20:00", None, "Jumpball", "Start game"),
+        ev("19:59", D, "Jumpball", "Jump Ball won by Duke"),
+        ev("10:00", M, "PersonalFoul", "Foul on Aday Mara."),
+        ev("10:00", D, "MadeFreeThrow", "Caleb Foster misses free throw"),
+        ev("10:00", D, "MadeFreeThrow", "Caleb Foster makes free throw"),
+        ev("9:50", M, "JumpShot", "Yaxel Lendeborg makes 10-foot jumper"),
+    ]
+    ivs = [summary(i) for i in H.intervals(events)]
+    assert ivs == [
+        (D, 1199, 600, "live", "foul", True),
+        (M, 600, 590, "dead", "shot", False),
+    ]
+
+
 def test_first_shot_with_no_jump_ball_opens_a_period_interval():
     events = [ev("19:40", D, "JumpShot", "Cameron Boozer makes 10-foot jumper")]
     first = H.intervals(events)[0]

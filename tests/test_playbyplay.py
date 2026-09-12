@@ -1,3 +1,6 @@
+import pytest
+
+from basketball_plays import halfcourt as H
 from basketball_plays import playbyplay as pbp
 
 
@@ -106,3 +109,96 @@ def test_match_player_and_locate_events():
     assert ts[0] == 10.0  # read at t=10 shows 1170 = 19:30
     assert ts[1] == 15.0
     assert ts[2] == 20.0  # outside the window: clamped to the end
+
+
+def test_normalize_text_converts_the_past_tense_verb():
+    assert pbp.normalize_text("Alex Condon missed Layup.") == "Alex Condon misses layup."
+    assert pbp.normalize_text("Cameron Boozer made Layup.") == "Cameron Boozer makes layup."
+
+
+def test_normalize_text_moves_the_assisted_by_tail_into_a_parenthetical():
+    got = pbp.normalize_text("Cameron Boozer made Layup. Assisted by Patrick Ngongba II.")
+    assert got == "Cameron Boozer makes layup (Patrick Ngongba II assists)"
+    # a name that itself ends with a period (e.g. "Jr.") is not truncated
+    got = pbp.normalize_text("Cameron Boozer made Layup. Assisted by Melvin Council Jr..")
+    assert got == "Cameron Boozer makes layup (Melvin Council Jr. assists)"
+
+
+def test_normalize_text_lowercases_the_shot_noun_vocabulary():
+    assert pbp.normalize_text("Alex Condon made Dunk.") == "Alex Condon makes dunk."
+    assert pbp.normalize_text("Boogie Fland made Two Point Tip Shot.") == \
+        "Boogie Fland makes two point tip shot."
+    assert pbp.normalize_text("Alex Condon missed Three Point Jumper.") == \
+        "Alex Condon misses three point jumper."
+    assert pbp.normalize_text("Alex Condon made Free Throw.") == "Alex Condon makes free throw."
+
+
+def test_normalize_text_leaves_present_tense_text_unchanged():
+    for text in [
+        "Ryan Conwell makes 24-foot three point jumper (J'Vonne Hadley assists)",
+        "Aday Mara misses free throw 1 of 2",
+        "Cameron Boozer Defensive Rebound.",
+        "Dame Sarr Turnover.",
+        "Foul on Isaiah Evans.",
+    ]:
+        assert pbp.normalize_text(text) == text
+
+
+@pytest.mark.parametrize("text", [
+    "Alex Condon missed Layup.",
+    "Cameron Boozer made Layup. Assisted by Patrick Ngongba II.",
+    "Ryan Conwell makes 24-foot three point jumper (J'Vonne Hadley assists)",
+    "Aday Mara misses free throw 1 of 2",
+])
+def test_normalize_text_is_idempotent(text):
+    once = pbp.normalize_text(text)
+    assert pbp.normalize_text(once) == once
+
+
+PRESENT_TENSE_FIXTURE = [
+    ev("19:59", "Jump Ball won by Duke", team="150", type_="Jumpball"),
+    ev("19:32", "Cameron Boozer makes 3-foot dunk (Caleb Foster assists)", team="150",
+       type_="DunkShot", score=2, scoring=True),
+    ev("19:10", "Yaxel Lendeborg misses 24-foot three point jumper", team="130"),
+    ev("19:05", "Cameron Boozer Defensive Rebound.", team="150", type_="Defensive Rebound"),
+    ev("18:50", "Isaiah Evans makes 10-foot jumper", team="150", score=2, scoring=True),
+    ev("18:30", "Foul on Aday Mara.", team="130", type_="PersonalFoul"),
+    ev("18:30", "Caleb Foster makes free throw 1 of 2", team="150", type_="MadeFreeThrow",
+       score=1, scoring=True),
+    ev("18:30", "Caleb Foster misses free throw 2 of 2", team="150", type_="MadeFreeThrow"),
+    ev("18:20", "Aday Mara Defensive Rebound.", team="130", type_="Defensive Rebound"),
+    ev("18:00", "Aday Mara Turnover.", team="130", type_="Lost Ball Turnover"),
+    ev("17:50", "Dame Sarr makes 23-foot three point jumper", team="150", score=3, scoring=True),
+    ev("17:30", "Yaxel Lendeborg misses free throw 1 of 1", team="130", type_="MadeFreeThrow"),
+]
+
+PAST_TENSE_FIXTURE = [
+    ev("19:59", "Jump Ball won by Duke", team="150", type_="Jumpball"),
+    ev("19:32", "Cameron Boozer made Dunk. Assisted by Caleb Foster.", team="150",
+       type_="DunkShot", score=2, scoring=True),
+    ev("19:10", "Yaxel Lendeborg missed Three Point Jumper.", team="130"),
+    ev("19:05", "Cameron Boozer Defensive Rebound.", team="150", type_="Defensive Rebound"),
+    ev("18:50", "Isaiah Evans made Jumper.", team="150", score=2, scoring=True),
+    ev("18:30", "Foul on Aday Mara.", team="130", type_="PersonalFoul"),
+    ev("18:30", "Caleb Foster made Free Throw.", team="150", type_="MadeFreeThrow",
+       score=1, scoring=True),
+    ev("18:30", "Caleb Foster missed Free Throw.", team="150", type_="MadeFreeThrow"),
+    ev("18:20", "Aday Mara Defensive Rebound.", team="130", type_="Defensive Rebound"),
+    ev("18:00", "Aday Mara Turnover.", team="130", type_="Lost Ball Turnover"),
+    ev("17:50", "Dame Sarr made Three Point Jumper.", team="150", score=3, scoring=True),
+    ev("17:30", "Yaxel Lendeborg missed Free Throw.", team="130", type_="MadeFreeThrow"),
+]
+
+
+def test_past_tense_fixture_yields_the_same_intervals_as_present_tense():
+    assert len(PRESENT_TENSE_FIXTURE) == len(PAST_TENSE_FIXTURE) == 12
+    present = pbp.parse_events(PRESENT_TENSE_FIXTURE)
+    past = pbp.parse_events(PAST_TENSE_FIXTURE)
+
+    def summary(iv):
+        return (iv.team, iv.start_clock, iv.end_clock, iv.start_type, iv.terminal, iv.free_throws)
+
+    present_ivs = [summary(i) for i in H.intervals(present)]
+    past_ivs = [summary(i) for i in H.intervals(past)]
+    assert present_ivs == past_ivs
+    assert present_ivs  # sanity: the fixture actually produces intervals

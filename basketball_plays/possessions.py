@@ -168,6 +168,16 @@ def segment_offense(
     return global_map.get(seg.half) if global_map is not None else None
 
 
+def use_period_maps(period_spans: list[tuple[float, float]] | None) -> bool:
+    """Whether there are usable period spans to learn a per-period offense map from.
+
+    False for both `None` (no scoreboard timeline given) and `[]` (a timeline with no trusted
+    clock reads, e.g. `periods.period_spans` found nothing) so callers fall back to the
+    per-segment/window `segment_offense` rule instead of blanking every offense label.
+    """
+    return bool(period_spans)
+
+
 def learn_offense_maps_by_span(
     votes: list[tuple[float, int, int]], spans: list[tuple[float, float]]
 ) -> list[dict[int, int]]:

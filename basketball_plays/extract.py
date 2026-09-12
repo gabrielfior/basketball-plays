@@ -211,10 +211,11 @@ def build_possessions(
     global_offense_map = None
     votes_by_frame = None
     offense_min_votes = 0
-    if period_spans is not None:
+    if possessions.use_period_maps(period_spans):
         # Each period has its own fixed basket assignment (teams swap at half time), so learn
         # one map per period from the scoreboard's period spans instead of guessing from votes
-        # or a time window.
+        # or a time window. An empty period_spans (a timeline with no trusted clock reads) is
+        # treated the same as None below, so a bad OCR run doesn't blank every offense label.
         period_offense_maps = possessions.learn_offense_maps_by_span(
             offense_votes_with_time(projected, states), period_spans)
     else:
@@ -227,7 +228,8 @@ def build_possessions(
         # Requiring ~20s of votes routes almost all segments through the time-windowed fallback
         # instead, which still resolves a true halftime flip correctly since the two halves are
         # far more than window_s apart. This path is now only a fallback for when no period
-        # spans are known (e.g. no scoreboard timeline yet).
+        # spans are known (e.g. no scoreboard timeline yet). NOTE: this 20s figure was tuned on
+        # the Michigan first-half data only and applies only along this no-period-spans fallback.
         offense_min_votes = round(20 * fps)
     names = resolve_team_names(projected, frames, cluster_brightness or {}, team_map,
                                home_team=home_team, away_team=away_team, rosters=rosters)

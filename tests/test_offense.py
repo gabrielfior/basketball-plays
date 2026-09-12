@@ -99,3 +99,14 @@ def test_span_index_inside_near_and_far():
     assert P.span_index(1220.0, spans) == 0  # 20s past its end, within 30s -> nearest
     assert P.span_index(2385.0, spans) == 1  # 15s before the second span's start -> nearest
     assert P.span_index(5000.0, spans) is None  # far outside every span
+
+
+def test_learn_offense_maps_by_span_with_no_spans_returns_no_maps():
+    votes = [(0.0, P.RIGHT, 1), (1.0, P.LEFT, 0)]
+    assert P.learn_offense_maps_by_span(votes, []) == []
+
+
+def test_use_period_maps_is_false_for_none_and_empty_and_true_otherwise():
+    assert P.use_period_maps(None) is False
+    assert P.use_period_maps([]) is False
+    assert P.use_period_maps([(0.0, 1200.0)]) is True

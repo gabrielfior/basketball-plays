@@ -91,9 +91,12 @@ data/games/<espn_id>/
   game.json            the registry entry, written after a full run
 ```
 
-`scripts/ingest_game.py <espn_id>` runs the seven steps (`download`, `espn`, `gpu`, `extract`,
-`ocr`, `annotate`, `halfcourt`) in order, skipping any step whose output already exists so a
-failed run can be fixed and the same command re-run to resume:
+`scripts/ingest_game.py <espn_id>` runs the seven steps (`download`, `espn`, `gpu`, `ocr`,
+`extract`, `annotate`, `halfcourt`) in order, skipping any step whose output already exists so a
+failed run can be fixed and the same command re-run to resume. OCR runs before extraction so the
+scoreboard's period spans are already known when Stage B decides offense: each period has one
+fixed basket assignment (teams switch baskets at half time), so offense is learned per period
+from those spans rather than guessed from a single whole-video vote.
 
 ```bash
 uv run python scripts/ingest_game.py 401817238 --dry-run     # print the plan, run nothing
@@ -121,32 +124,35 @@ uv run python scripts/probe_scoreboard.py data/games/<espn_id>/video.mp4 --t 900
 `uv run python scripts/ingest_game.py 401817238` end to end on the full 77.7-minute broadcast
 (Phase 0 only covered the first half): download (1.98 GB), ESPN summary, GPU stage (16 chunks,
 46,618 frames at 10 fps; cost estimate `77.7 video minutes x $0.09 = $6.99`, actual Modal billing
-$5.00), extraction (157 possessions), scoreboard OCR (4,634 reads), per-period annotation and
-half-court records:
+**$5.00 total** — L4 GPU $4.28, CPU $0.59, memory $0.13), scoreboard OCR (4,634 reads, run before
+extraction), extraction (157 possessions, offense learned per period from the OCR'd period
+spans), per-period annotation and half-court records:
 
 | Period | Span (video s) | Intervals | Located | Dead-ball | With setup |
 |---|---|---|---|---|---|
-| 1 | 10.3 - 2198.3 | 36 | 32 | 16 | 3 (19%) |
+| 1 | 10.3 - 2198.3 | 36 | 35 | 20 | 10 (50%) |
 | 2 | 2198.3 - 4642.3 | 32 | 30 | 17 | 9 (53%) |
 
 Two periods were detected at the expected boundary (period 2 starts at video 36.6 min, the
-expected half-time mark); interval counts (36 in period 1) and canonical mirroring (player x
-mostly under 47 near setup in both periods, ~90-97% of the sampled positions) match Phase 0. The
-dead-ball setup rate is below Phase 0's 65% in both periods (worst in period 1), outside the
-+/-10 point tolerance. Diagnosis: re-running the shared `halfcourt.build_records`/`find_setup` on
-the original Phase 0 trajectories and scoreboard (`data/trajectories.jsonl`,
-`data/scoreboard_raw.jsonl`) exactly reproduces the Phase 0 numbers (36 intervals, 34 located, 20
-dead-ball, 13 with setup), which rules out an algorithm regression, a period-split issue, and an
-attack-direction mis-vote (both periods vote unanimously for one basket, not tied). Period 1 has
-the same 13 full-court intervals as Phase 0, but only 2 of 13 find a still, in-frontcourt frame in
-the fresh full-game pass (Phase 0 found more), even widening the search window from 6 s to 20 s;
-per-frame inspection shows too few Duke players simultaneously tracked and stationary in the
-seconds after these full-court inbounds, while the aggregate per-period stillness rate is actually
-slightly higher than Phase 0's (8.3% vs 4.3% of sampled frames). The likely cause is drift in the
-hosted Roboflow Universe models (this run pulled a fresh `inference-gpu` build, months after Phase
-0) or chunk-boundary effects from processing the full game in 16 parallel 5-minute chunks instead
-of one dedicated clip, rather than a bug in possession segmentation, clock mapping, or outcomes.
-This is a data-quality watchpoint for Phase 1B, not a code change in this task.
+expected half-time mark).
+
+An earlier run of this smoke test showed a much lower period-1 setup rate (3 of 16 dead-ball
+intervals, 19%) than period 2's. The cause was the offense map: it was learned once over the
+*whole* video, but teams switch baskets at half time, so that single map's votes partly canceled
+between the two halves and period 1's offense label was wrong for roughly half its possessions —
+which made `find_setup`'s frontcourt/attacking-basket check miss most of period 1's real setups.
+The fix (this task) learns one offense map per period instead, from the scoreboard's period
+spans (`possessions.learn_offense_maps_by_span`); period 1's setup rate above (50%) is now in
+line with period 2's (53%).
+
+The remaining gap to Phase 0 on the same footage (10 vs. 13 setups found in period 1) is not the
+offense-map bug: it comes from tracking differences between two separate GPU runs of the same
+clip (this smoke test re-ran Stage A rather than reusing Phase 0's raw detections) — 7 of Phase
+0's 13 setup records changed verdict, each with its `t0` within 1 s of Phase 0's `t0`, consistent
+with slightly different player tracks or box positions at the same moment rather than a different
+possession being picked. This is a Phase 2 tracking-robustness item (consistency across separate
+GPU runs of the same footage), not a bug in possession segmentation, clock mapping, or the
+offense/outcome logic.
 
 Only the `espn` layout has been exercised through a real ingest so far; `cbs`, `ncaa`, `cw` and
 `cbssn` have fixtures and pass `probe_scoreboard.py` but no game using them has been run through

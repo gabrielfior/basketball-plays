@@ -67,6 +67,10 @@ def step_espn(game, paths, dry):
 
 
 def step_extract(game, paths, dry):
+    if not paths.scoreboard_raw.exists() and not dry:
+        # extract needs the OCR'd period spans to learn one offense map per period; run OCR
+        # first if it hasn't happened yet (mirrors the espn auto-run below).
+        step_ocr(game, paths, False)
     run(["uv", "run", "python", "scripts/extract_trajectories.py", str(paths.video), "--skip-gpu",
          "--raw-dir", str(paths.raw_dir), "--out", str(paths.trajectories),
          "--rosters-from", str(paths.espn_summary),

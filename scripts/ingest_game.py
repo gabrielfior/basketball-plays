@@ -230,6 +230,7 @@ def step_halfcourt(game, paths, dry, allow_mismatch=False):
     records = []
     coverage = {"game": game.espn_id, "layout": game.layout, **period_fields, "periods": []}
     trust: list[tuple[int, float, float]] = []
+    opponent = info.away if info.home == "Duke" else info.home
     for span in spans:
         events = pbp.parse_events(summary["plays"], period=span.period, team_by_id=info.team_by_id)
         reads = sb.clean_timeline([r for r in reads_raw if span.t_lo - 5 <= r.t <= span.t_hi + 5],
@@ -237,7 +238,7 @@ def step_halfcourt(game, paths, dry, allow_mismatch=False):
         # span.period is an ESPN period number only because check_periods passed above.
         recs = H.build_records(game.espn_id, "Duke", events, reads, possessions,
                                period_length=pbp.period_length(span.period), period=span.period,
-                               span=(span.t_lo, span.t_hi))
+                               span=(span.t_lo, span.t_hi), opponent=opponent)
         records.extend(recs)
         dead = [r for r in recs if r.located and r.t0 is not None and not r.transition
                 and r.start_type in ("ato", "dead")]

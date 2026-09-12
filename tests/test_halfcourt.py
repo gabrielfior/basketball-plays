@@ -541,3 +541,23 @@ def test_tracks_from_record_roundtrips_detected_and_length():
     tr = H.tracks_from_record(rec)[0]
     assert (tr.track_id, tr.name, tr.jersey, tr.detected, tr.length) == (9, "A", "12", {1.0}, 7)
     assert tr.xy == {1.0: (2.0, 3.0)}
+
+
+def test_build_records_carries_the_opponents_tracks_mirrored_like_duke():
+    events = OPENING[:8]
+    rs = reads([(58, 1174), (59, 1173), (60, 1172), (61, 1172), (62, 1172), (63, 1172)]
+               + [(63 + k, 1171 - (k - 1)) for k in range(1, 30)])
+    duke = [PlayerTrack(10 + i, "Duke", None, None, traj(60.0, 100, 70.0, 8.0 + 8 * i), [],
+                        holding=[66.5] if i == 0 else []) for i in range(5)]
+    mich = [PlayerTrack(20 + i, "Michigan", None, None, traj(60.0, 100, 80.0, 8.0 + 8 * i), [])
+            for i in range(5)]
+    pos = make_possession(duke + mich, basket="right", t0=60.0, t1=95.0)
+    recs = H.build_records("test", "Duke", events, rs, [pos], opponent="Michigan")
+    r = recs[0]
+    assert len(r.opponents) == 5
+    # raw x 80 at the right basket mirrors to 14: the defenders sit near Duke's attacking rim
+    assert all(abs(row[1] - 14.0) < 0.01 for p in r.opponents for row in p["trajectory"])
+    assert all(p["track_id"] >= 20 for p in r.opponents)
+    back = H.HalfcourtRecord.from_dict(json.loads(r.to_json()))
+    assert len(back.opponents) == 5
+    assert H.build_records("test", "Duke", events, rs, [pos])[0].opponents == []

@@ -547,6 +547,7 @@ class HalfcourtRecord:
     # more than 1 ft apart, so the frame's positions cannot all be trusted
     suspect_duplicates: bool = field(default=False, kw_only=True)
     players: list[dict] = field(default_factory=list)
+    opponents: list[dict] = field(default_factory=list, kw_only=True)
     ball_handler: list[list[float]] = field(default_factory=list)
     events: list[dict] = field(default_factory=list)
 
@@ -556,6 +557,12 @@ class HalfcourtRecord:
     @classmethod
     def from_dict(cls, d: dict) -> HalfcourtRecord:
         return cls(**d)
+
+
+def _track_dict(tr: Track) -> dict:
+    return {"track_id": tr.track_id, "name": tr.name, "jersey": tr.jersey,
+            "trajectory": [[t, round(x, 2), round(y, 2)] for t, (x, y) in sorted(tr.xy.items())],
+            "detected": sorted(tr.detected), "length": tr.length}
 
 
 def _bare_record(game_id: str, index: int, iv: Interval, outcome: str | None, points: int,
@@ -576,8 +583,8 @@ def _bare_record(game_id: str, index: int, iv: Interval, outcome: str | None, po
 
 def build_records(game_id: str, team: str, events: list[Event], reads,
                    possessions: list[Possession], period_length: float = 1200.0,
-                   period: int = 1,
-                   span: tuple[float, float] | None = None) -> list[HalfcourtRecord]:
+                   period: int = 1, span: tuple[float, float] | None = None,
+                   opponent: str | None = None) -> list[HalfcourtRecord]:
     """One `HalfcourtRecord` per `team` interval in `events`, with clocks mapped to video time via
     `reads` and player/ball-handler data gathered from `possessions` where a track reached the
     frontcourt.
@@ -615,6 +622,8 @@ def build_records(game_id: str, team: str, events: list[Event], reads,
             continue
         t_end = round(t_end + 0.5, 2)  # the read at the terminal clock precedes the event by 1 s
         tracks = gather_tracks(possessions, team, t_start - 3.0, t_end, attacking_basket)
+        opp_tracks = (gather_tracks(possessions, opponent, t_start - 3.0, t_end, attacking_basket)
+                      if opponent else [])
         handler = ball_handler_series(tracks)
         t0 = find_t0(tracks, handler, t_start - 1.0, t_end)
         if t0 is None:
@@ -637,11 +646,8 @@ def build_records(game_id: str, team: str, events: list[Event], reads,
             t_start=t_start, t_end=t_end, t0=t0, setup=setup, no_setup=no_setup,
             transition=transition, located=True, outcome=outcome, points=points,
             n_visible_at_setup=visible, suspect_duplicates=raw_count > MAX_PLAYERS,
-            players=[{"track_id": tr.track_id, "name": tr.name, "jersey": tr.jersey,
-                      "trajectory": [[t, round(x, 2), round(y, 2)]
-                                     for t, (x, y) in sorted(tr.xy.items())],
-                      "detected": sorted(tr.detected), "length": tr.length}
-                     for tr in tracks],
+            players=[_track_dict(tr) for tr in tracks],
+            opponents=[_track_dict(tr) for tr in opp_tracks],
             ball_handler=[[t, round(x, 2), round(y, 2)] for t, (x, y) in handler.items()],
             events=[e.to_dict() for e in iv.events],
         ))

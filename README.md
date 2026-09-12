@@ -141,9 +141,29 @@ period's `ocr_reads`, and at the top level as the read-count-weighted average ov
 They are computed per period on purpose: `clean_timeline` enforces a non-increasing clock, so
 cleaning a whole game in one pass rejects nearly everything after the clock resets at half time.
 
-When the automatic cluster-to-team decision is wrong for a game, re-run extraction with
+Stage A splits the players into two teams per game. When the ESPN box score gives both rosters
+(`ingest_game.py` passes them as `--home-numbers/--away-numbers/--home-name/--away-name`), the
+`fit_teams` step reads the jersey number on each of 400 sampled frames' player crops with the same
+OCR model the per-frame pass uses, keeps the crops whose number is on exactly one of the two
+rosters, and fits a supervised logistic regression on their SigLIP embeddings -- cluster 0 is then
+the home team and cluster 1 the away team by construction. It writes that mapping to
+`raw/team_map.json`, which the `extract` step forwards as `--team-map "0=<home>,1=<away>"` so
+Stage B is told the mapping instead of inferring it from uniform brightness and roster agreement
+(`reassign_team_by_jersey` still runs afterwards as a per-track safety net). With fewer than 15
+labelled crops for either team -- or with `--no-team-ocr`, or no rosters -- it falls back to the
+unsupervised fit (SigLIP -> UMAP(3) -> KMeans(2)) on 160 sampled frames, whose cluster ids are
+arbitrary, and writes no `team_map.json`. The unsupervised fit mixed both teams in the Florida
+game (401806364), which left about 2.6 Duke players per frame; validate the supervised fit there
+with (the video must be re-downloaded first, `--steps download`; about $6 of GPU):
+
+```bash
+uv run python scripts/ingest_game.py 401806364 \
+    --steps gpu,ocr,extract,annotate,halfcourt --force gpu
+```
+
+When the cluster-to-team decision is wrong for a game anyway, re-run extraction with
 `--team-map "0=<team>"` (e.g. `--team-map "0=North Carolina"`): the name must be one of that
-game's two teams, and the other cluster gets the other team.
+game's two teams, and an unnamed cluster gets the other team.
 
 Each game's broadcast uses one of five scoreboard graphic layouts
 (`basketball_plays/broadcasts.py`), set per game in `games.json`: `espn` (ESPN, ESPN2, ACC

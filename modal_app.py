@@ -7,7 +7,11 @@
     modal run modal_app.py --video data/duke_michigan_q1.mp4 --end 2135 --fps 10
 
 Uploads the video to a per-game path on a Modal Volume (/vol/games/<game>/...), fits the team
-classifier once, then processes 5-minute chunks in parallel. `--end` defaults to the video's
+classifier once, then processes 5-minute chunks in parallel. With both rosters'
+numbers (`--home-numbers 1,5,23 --away-numbers 2,11 --home-name Duke --away-name Florida`) the
+team classifier is fitted supervised on crops whose jersey number the OCR read for exactly one
+roster, making cluster 0 the home team and cluster 1 the away team and writing team_map.json
+next to the frames; `--no-team-ocr` (or a missing roster) keeps the old unsupervised clustering. `--end` defaults to the video's
 duration (via ffprobe), so the whole video is processed unless `--end` is given. Prints an
 estimated cost before doing anything remote and refuses to proceed above `--max-cost`. Writes
 <out-dir>/frames_XX.jsonl and <out-dir>/meta.json locally (default data/games/<game>/raw).
@@ -109,23 +113,74 @@ def _video_size(path: str) -> tuple[int, int]:
     return w, h
 
 
+def _read_numbers(ocr_model, frame, player_boxes, number_boxes) -> list[tuple[int, str]]:
+    """OCR every detected number box, attributed to the smallest player box containing it.
+
+    Returns `(player index, text)` pairs; a number box inside no player box is dropped, and an
+    OCR failure is non-fatal. Shared by `fit_teams` (to label crops for the supervised team
+    classifier) and `process_chunk` (to emit per-track reads), so both read exactly the same
+    padded number crop.
+    """
+    import numpy as np
+
+    out: list[tuple[int, str]] = []
+    if not len(player_boxes) or not len(number_boxes):
+        return out
+    h, w = frame.shape[:2]
+    pboxes = np.asarray(player_boxes, dtype=float)
+    areas = (pboxes[:, 2] - pboxes[:, 0]) * (pboxes[:, 3] - pboxes[:, 1])
+    for box in number_boxes:
+        cx, cy = (box[0] + box[2]) / 2, (box[1] + box[3]) / 2
+        inside = ((pboxes[:, 0] <= cx) & (cx <= pboxes[:, 2])
+                  & (pboxes[:, 1] <= cy) & (cy <= pboxes[:, 3]))
+        if not inside.any():
+            continue
+        owner = int(np.argmin(np.where(inside, areas, np.inf)))
+        x1, y1, x2, y2 = box
+        x1, y1 = max(0, int(x1) - 10), max(0, int(y1) - 10)
+        x2, y2 = min(w, int(x2) + 10), min(h, int(y2) + 10)
+        if x2 - x1 < 4 or y2 - y1 < 4:
+            continue
+        try:
+            text = ocr_model.infer(frame[y1:y2, x1:x2], prompt=OCR_PROMPT)[0].response
+        except Exception:  # noqa: BLE001 - OCR failures are non-fatal
+            continue
+        out.append((owner, str(text).strip()))
+    return out
+
+
 @app.function(gpu="L4", secrets=secrets, volumes={VOL_PATH: vol}, timeout=3600)
-def fit_teams(game: str, start_s: float, end_s: float, n_samples: int = 160) -> dict:
+def fit_teams(
+    game: str, start_s: float, end_s: float, n_samples: int = 160,
+    home_numbers: list[str] = (), away_numbers: list[str] = (), ocr: bool = True,
+    home_name: str = "", away_name: str = "",
+) -> dict:
+    """Fit the per-game team classifier on player crops sampled across the video.
+
+    With both rosters' jersey numbers and `ocr` on, each sampled crop's jersey number is read
+    (same OCR model and padded number box `process_chunk` uses) and crops whose number belongs to
+    exactly one roster train a supervised classifier, so cluster 0 is the home team and cluster 1
+    the away team by construction. Falls back to the unsupervised UMAP+KMeans fit when either
+    team ends up with too few labelled crops.
+    """
     import cv2
     import numpy as np
     import supervision as sv
     from inference import get_model
 
-    from basketball_plays.schema import PLAYER_CLASSES
-    from basketball_plays.team import TeamClassifier, center_crop_boxes, crop
+    from basketball_plays.schema import CLS_NUMBER, PLAYER_CLASSES
+    from basketball_plays.team import TeamClassifier, center_crop_boxes, crop, label_crops_by_jersey
 
     paths = game_paths(game)
     path = paths["video"]
     os.makedirs(paths["base"], exist_ok=True)
+    label = bool(ocr and len(home_numbers) and len(away_numbers))
     model = get_model(model_id=PLAYER_MODEL_ID)
+    ocr_model = get_model(model_id=OCR_MODEL_ID) if label else None
     cap = cv2.VideoCapture(path)
     src_fps = cap.get(cv2.CAP_PROP_FPS)
-    crops = []
+    crops: list = []
+    reads: list[str] = []
     for t in np.linspace(start_s, end_s, n_samples):
         cap.set(cv2.CAP_PROP_POS_FRAMES, int(t * src_fps))
         ok, frame = cap.read()
@@ -133,17 +188,40 @@ def fit_teams(game: str, start_s: float, end_s: float, n_samples: int = 160) -> 
             continue
         res = model.infer(frame, confidence=0.4, iou_threshold=0.9, class_agnostic_nms=True)[0]
         det = sv.Detections.from_inference(res)
-        det = det[np.isin(det.class_id, PLAYER_CLASSES)]
-        for box in center_crop_boxes(det.xyxy):
+        players = det[np.isin(det.class_id, PLAYER_CLASSES)]
+        if not len(players):
+            continue
+        frame_reads = [""] * len(players)
+        if label:
+            for owner, text in _read_numbers(ocr_model, frame, players.xyxy,
+                                             det[det.class_id == CLS_NUMBER].xyxy):
+                frame_reads[owner] = text
+        for k, box in enumerate(center_crop_boxes(players.xyxy)):
             c = crop(frame, box)
             if c.shape[0] >= 8 and c.shape[1] >= 8:
                 crops.append(c)
+                reads.append(frame_reads[k])
     cap.release()
+
+    labels = label_crops_by_jersey(reads, home_numbers, away_numbers) if label else []
+    n_labelled = [sum(1 for y in labels if y == 0), sum(1 for y in labels if y == 1)]
     clf = TeamClassifier(device="cuda")
-    clf.fit(crops)
+    supervised = clf.fit_supervised(crops, labels) if labels else False
+    if not supervised:
+        if label:
+            print(f"supervised fit skipped: only {n_labelled} labelled crops; clustering instead")
+        clf.fit(crops)
     clf.save(paths["classifier"])
+    team_map = None
+    if supervised and home_name and away_name:
+        # Supervised cluster ids are team ids, so Stage B can be told the mapping outright
+        # instead of guessing it from brightness and roster agreement.
+        team_map = {"0": home_name, "1": away_name}
+        with open(f"{paths['base']}/team_map.json", "w") as f:
+            json.dump(team_map, f, indent=2)
     vol.commit()
-    return {"n_crops": len(crops), "brightness": clf.brightness}
+    return {"n_crops": len(crops), "brightness": clf.brightness, "supervised": supervised,
+            "n_labelled": n_labelled, "team_map": team_map}
 
 
 @app.function(gpu="L4", secrets=secrets, volumes={VOL_PATH: vol}, timeout=3600)
@@ -224,25 +302,9 @@ def process_chunk(
             numbers = []
             if i % ocr_every == 0 and dets:
                 nums = det[det.class_id == CLS_NUMBER]
-                h, w = frame.shape[:2]
                 pboxes = np.array([d.bbox for d in dets])
-                areas = (pboxes[:, 2] - pboxes[:, 0]) * (pboxes[:, 3] - pboxes[:, 1])
-                for box in nums.xyxy:
-                    cx, cy = (box[0] + box[2]) / 2, (box[1] + box[3]) / 2
-                    inside = (pboxes[:, 0] <= cx) & (cx <= pboxes[:, 2]) & (pboxes[:, 1] <= cy) & (cy <= pboxes[:, 3])
-                    if not inside.any():
-                        continue
-                    owner = int(np.argmin(np.where(inside, areas, np.inf)))
-                    x1, y1, x2, y2 = box
-                    x1, y1 = max(0, int(x1) - 10), max(0, int(y1) - 10)
-                    x2, y2 = min(w, int(x2) + 10), min(h, int(y2) + 10)
-                    if x2 - x1 < 4 or y2 - y1 < 4:
-                        continue
-                    try:
-                        text = ocr_model.infer(frame[y1:y2, x1:x2], prompt=OCR_PROMPT)[0].response
-                    except Exception:  # noqa: BLE001 - OCR failures are non-fatal
-                        continue
-                    numbers.append({"track_id": dets[owner].track_id, "text": str(text).strip()})
+                numbers = [{"track_id": dets[owner].track_id, "text": text}
+                           for owner, text in _read_numbers(ocr_model, frame, pboxes, nums.xyxy)]
 
             kres = kp_model.infer(frame, confidence=0.3)[0]
             kps = sv.KeyPoints.from_inference(kres)
@@ -277,6 +339,11 @@ def main(
     skip_upload: bool = False,
     skip_fit: bool = False,
     max_cost: float = 10.0,
+    home_numbers: str = "",
+    away_numbers: str = "",
+    home_name: str = "",
+    away_name: str = "",
+    no_team_ocr: bool = False,
     # 0.09 is a deliberately conservative ceiling: the Michigan game (77.7 video minutes) actually
     # billed $5.00, i.e. $0.064/min. Keep the estimate above the measured rate.
     cost_per_minute: float = 0.09,
@@ -310,11 +377,28 @@ def main(
         with vol.batch_upload(force=True) as batch:
             batch.put_file(video, paths["video"][len(VOL_PATH):])
     meta = {"start": start, "end": end, "fps": fps}
+    team_map_path = Path(out_dir) / "team_map.json"
     if not skip_fit:
-        fit = fit_teams.remote(game, start, end)
+        home_nums = [n for n in home_numbers.split(",") if n.strip()]
+        away_nums = [n for n in away_numbers.split(",") if n.strip()]
+        use_ocr = bool(home_nums and away_nums and not no_team_ocr)
+        # Jersey labelling only keeps the crops whose number is unambiguous, so sample more
+        # frames when it is on.
+        fit = fit_teams.remote(game, start, end, 400 if use_ocr else 160, home_nums, away_nums,
+                               use_ocr, home_name, away_name)
         print("team classifier:", fit)
         meta["cluster_brightness"] = fit["brightness"]
         meta["n_crops"] = fit["n_crops"]
+        meta["supervised"] = fit.get("supervised", False)
+        meta["n_labelled"] = fit.get("n_labelled", [0, 0])
+        Path(out_dir).mkdir(parents=True, exist_ok=True)
+        if fit.get("team_map"):
+            team_map_path.write_text(json.dumps(fit["team_map"], indent=2))
+            print(f"wrote {team_map_path} (cluster ids are team ids)")
+        elif team_map_path.exists():
+            # An earlier supervised run's map would mislabel this unsupervised fit's clusters.
+            team_map_path.unlink()
+            print(f"removed stale {team_map_path} (this fit was unsupervised)")
     else:
         old = Path(out_dir) / "meta.json"
         if old.exists():

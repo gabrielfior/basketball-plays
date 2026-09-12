@@ -3,7 +3,9 @@
 Steps (each skipped when its output exists):
   download   yt-dlp 720p avc1 video -> data/games/<id>/video.mp4
   espn       ESPN summary -> espn_summary.json
-  gpu        Modal Stage A -> raw/frames_XX.jsonl (prints a cost estimate first, saved to cost.json)
+  gpu        Modal Stage A -> raw/frames_XX.jsonl (prints a cost estimate first, saved to cost.json;
+             the ESPN rosters go along, so the team classifier is fitted supervised on OCR'd
+             jersey numbers and leaves raw/team_map.json for extract)
   ocr        scoreboard timeline -> scoreboard_raw.jsonl (whole video; layout from games.json)
   extract    Stage B -> trajectories.jsonl (rosters from the ESPN summary; offense learned per
              period from the scoreboard timeline, not guessed from a time window)
@@ -150,10 +152,43 @@ def step_download(game, paths, dry):
          "-o", str(paths.video), game.youtube_url], dry)
 
 
+def jersey_sort_key(number: str) -> tuple[int, str]:
+    return (int(number), "") if number.isdigit() else (10**6, number)
+
+
+def team_flags(info) -> list[str]:
+    """Stage A flags that turn on the supervised team classifier, from a game's ESPN rosters.
+
+    Both rosters' jersey numbers let `fit_teams` label sampled crops by their OCR'd number and fit
+    a supervised classifier whose cluster 0 is the home team and cluster 1 the away team; the
+    names go into team_map.json so Stage B is told that mapping instead of guessing it. An empty
+    roster (ESPN summary without a box score) means no labels, so the flags are left off and
+    Stage A clusters as before.
+    """
+    home = sorted(info.rosters.get(info.home, {}), key=jersey_sort_key)
+    away = sorted(info.rosters.get(info.away, {}), key=jersey_sort_key)
+    if not home or not away:
+        return []
+    return ["--home-numbers", ",".join(home), "--away-numbers", ",".join(away),
+            "--home-name", info.home, "--away-name", info.away]
+
+
+def team_map_flags(team_map_path: Path) -> list[str]:
+    """`--team-map` flags for Stage B when Stage A left a supervised cluster->team mapping."""
+    if not team_map_path.exists():
+        return []
+    team_map = json.loads(team_map_path.read_text())
+    spec = ",".join(f"{k}={team_map[k]}" for k in sorted(team_map))
+    return ["--team-map", spec] if spec else []
+
+
 def step_gpu(game, paths, dry, max_cost):
+    flags = []
+    if paths.espn_summary.exists():
+        flags = team_flags(gameinfo.from_summary(json.loads(paths.espn_summary.read_text())))
     out = run(["uv", "run", "modal", "run", "modal_app.py", "--video", str(paths.video),
                "--game", game.espn_id, "--end", "-1", "--out-dir", str(paths.raw_dir),
-               "--max-cost", str(max_cost)], dry, capture=True)
+               "--max-cost", str(max_cost), *flags], dry, capture=True)
     m = COST_LINE.search(out)
     if m and not dry:
         paths.root.mkdir(parents=True, exist_ok=True)
@@ -179,7 +214,8 @@ def step_extract(game, paths, dry, allow_mismatch=False):
     run(["uv", "run", "python", "scripts/extract_trajectories.py", str(paths.video), "--skip-gpu",
          "--raw-dir", str(paths.raw_dir), "--out", str(paths.trajectories),
          "--rosters-from", str(paths.espn_summary),
-         "--periods-from", str(paths.scoreboard_raw)], dry)
+         "--periods-from", str(paths.scoreboard_raw),
+         *team_map_flags(paths.raw_dir / "team_map.json")], dry)
 
 
 def step_ocr(game, paths, dry):
@@ -365,6 +401,9 @@ def main() -> None:
         if step == "download":
             step_download(game, paths, args.dry_run)
         elif step == "gpu":
+            # the rosters drive Stage A's supervised team classifier, so fetch them first
+            if not paths.espn_summary.exists() and not args.dry_run:
+                step_espn(game, paths, False)
             step_gpu(game, paths, args.dry_run, args.max_cost)
         elif step == "espn":
             step_espn(game, paths, args.dry_run)

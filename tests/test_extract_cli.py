@@ -33,6 +33,19 @@ def test_team_map_resolves_a_named_team_and_gives_the_other_cluster_the_other_te
         0: "North Carolina", 1: "Duke"}
 
 
+def test_team_map_accepts_both_clusters_as_stage_a_writes_them():
+    # Stage A's team_map.json names both clusters; the two entries must agree
+    assert cli.resolve_team_map("0=Duke,1=Florida", "Duke", "Florida") == {0: "Duke", 1: "Florida"}
+    assert cli.resolve_team_map("1=Duke,0=Florida", "Duke", "Florida") == {0: "Florida", 1: "Duke"}
+
+
+def test_team_map_rejects_contradictory_entries():
+    for spec in ("0=Duke,0=Florida", "0=Duke,1=Duke"):
+        with pytest.raises(SystemExit) as excinfo:
+            cli.resolve_team_map(spec, "Duke", "Florida")
+        assert "--team-map" in str(excinfo.value)
+
+
 def test_team_map_rejects_a_team_that_is_not_playing_in_this_game():
     with pytest.raises(SystemExit) as excinfo:
         cli.resolve_team_map("0=Kansas", "Duke", "Michigan")

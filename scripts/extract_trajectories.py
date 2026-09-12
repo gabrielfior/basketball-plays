@@ -50,25 +50,37 @@ DEFAULT_END = 2135.0  # legacy default (35:35), overridden to the whole video wh
 
 
 def resolve_team_map(spec: str, home: str, away: str) -> dict[int, str] | None:
-    """Turn a `--team-map` spec like `"0=Duke"` into `{0: 'Duke', 1: <the other team>}`.
+    """Turn a `--team-map` spec into `{0: <team>, 1: <team>}`.
+
+    One entry (`"0=Duke"`) is enough -- the other cluster gets the other team -- and both may be
+    given (`"0=Duke,1=Florida"`, which is what Stage A's team_map.json produces), in which case
+    they must agree with each other.
 
     `auto` (the default) returns None, leaving the cluster-to-team decision to the appearance
-    and jersey evidence. The named team must be one of this game's two teams, so a typo or a
+    and jersey evidence. Every named team must be one of this game's two teams, so a typo or a
     team from another game fails here instead of silently mislabelling every possession.
     """
     if spec == "auto":
         return None
-    cluster_text, _, name = spec.partition("=")
-    cluster_text, name = cluster_text.strip(), name.strip()
-    if cluster_text not in ("0", "1") or not name:
-        sys.exit(f"--team-map must look like '0={home}' or '1={away}' (got {spec!r})")
-    match = next((t for t in (home, away) if t.lower() == name.lower()), None)
-    if match is None:
-        sys.exit(f"--team-map team {name!r} is not one of this game's teams "
-                 f"({home!r}, {away!r})")
-    cluster = int(cluster_text)
-    other = away if match == home else home
-    return {cluster: match, 1 - cluster: other}
+    pairs: dict[int, str] = {}
+    for part in spec.split(","):
+        cluster_text, _, name = part.partition("=")
+        cluster_text, name = cluster_text.strip(), name.strip()
+        if cluster_text not in ("0", "1") or not name:
+            sys.exit(f"--team-map must look like '0={home}' or '1={away}' (got {spec!r})")
+        match = next((t for t in (home, away) if t.lower() == name.lower()), None)
+        if match is None:
+            sys.exit(f"--team-map team {name!r} is not one of this game's teams "
+                     f"({home!r}, {away!r})")
+        cluster = int(cluster_text)
+        if pairs.setdefault(cluster, match) != match:
+            sys.exit(f"--team-map gives cluster {cluster} two different teams (got {spec!r})")
+        pairs[cluster] = match
+    if len(pairs) == 2 and pairs[0] == pairs[1]:
+        sys.exit(f"--team-map gives both clusters the same team (got {spec!r})")
+    cluster, team = next(iter(pairs.items()))
+    pairs[1 - cluster] = away if team == home else home
+    return pairs
 
 
 def main() -> None:
@@ -92,9 +104,9 @@ def main() -> None:
     ap.add_argument("--skip-gpu", action="store_true", help="reuse raw detections in --raw-dir")
     ap.add_argument("--skip-upload", action="store_true", help="video already on the Modal volume")
     ap.add_argument("--team-map", default="auto",
-                    help="force a cluster's team, e.g. \"0=Duke\"; the team must be one of this "
-                         "game's two teams (from --rosters-from, else Duke/Michigan) and the "
-                         "other cluster gets the other team")
+                    help="force a cluster's team, e.g. \"0=Duke\" or \"0=Duke,1=Florida\"; every "
+                         "team must be one of this game's two teams (from --rosters-from, else "
+                         "Duke/Michigan) and an unnamed cluster gets the other team")
     ap.add_argument("--min-players", type=int, default=6)
     ap.add_argument("--min-duration", type=float, default=3.0)
     ap.add_argument("--max-gap", type=float, default=3.0, help="invalid-view gap that ends a possession")

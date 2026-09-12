@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from basketball_plays import gameinfo
 from basketball_plays import scoreboard as sb
 from basketball_plays.games import Game, GamePaths
 from basketball_plays.periods import PeriodSpan
@@ -219,3 +220,30 @@ def test_cost_line_is_parsed_from_the_gpu_step_output():
     line = "estimated cost: 77.7 video minutes x $0.09 = $6.99\n"
     assert ingest.COST_LINE.search(line).group(1) == "6.99"
     assert ingest.COST_LINE.search("nothing here") is None
+
+
+def an_info(home_roster, away_roster, home="Duke", away="Florida"):
+    return gameinfo.GameInfo(home=home, away=away, team_by_id={}, rosters={home: home_roster,
+                                                                           away: away_roster},
+                             starters={}, periods=[1, 2])
+
+
+def test_team_flags_pass_both_rosters_numbers_and_names_to_stage_a():
+    info = an_info({"5": "A", "23": "B", "1": "C"}, {"11": "D", "2": "E"})
+    assert ingest.team_flags(info) == [
+        "--home-numbers", "1,5,23", "--away-numbers", "2,11",
+        "--home-name", "Duke", "--away-name", "Florida",
+    ]
+
+
+def test_team_flags_are_empty_when_either_roster_is_missing():
+    # an ESPN summary without a box score has no jersey numbers -> no supervision, no flags
+    assert ingest.team_flags(an_info({}, {"11": "D"})) == []
+    assert ingest.team_flags(an_info({"5": "A"}, {})) == []
+
+
+def test_team_map_flags_forward_stage_as_supervised_mapping(tmp_path):
+    path = tmp_path / "team_map.json"
+    assert ingest.team_map_flags(path) == []  # no supervised fit -> Stage B decides as before
+    path.write_text(json.dumps({"1": "Florida", "0": "Duke"}))
+    assert ingest.team_map_flags(path) == ["--team-map", "0=Duke,1=Florida"]

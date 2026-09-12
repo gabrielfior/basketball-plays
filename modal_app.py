@@ -1,9 +1,12 @@
 """Stage A: GPU perception on Modal.
 
-    modal run modal_app.py --video data/duke_michigan_q1.mp4 --end 2135 --fps 10
+    modal run modal_app.py --video data/duke_michigan_q1.mp4 --game 401817238 --fps 10
 
-Uploads the video to a Modal Volume, fits the team classifier once, then processes 5-minute
-chunks in parallel. Writes data/raw/frames_XX.jsonl and data/raw/meta.json locally.
+Uploads the video to a per-game path on a Modal Volume (/vol/games/<game>/...), fits the team
+classifier once, then processes 5-minute chunks in parallel. `--end` defaults to the video's
+duration (via ffprobe), so the whole video is processed unless `--end` is given. Prints an
+estimated cost before doing anything remote and refuses to proceed above `--max-cost`. Writes
+<out-dir>/frames_XX.jsonl and <out-dir>/meta.json locally (default data/games/<game>/raw).
 """
 
 from __future__ import annotations
@@ -20,8 +23,17 @@ OCR_MODEL_ID = "basketball-jersey-numbers-ocr/3"
 OCR_PROMPT = "Read the number."
 
 VOL_PATH = "/vol"
-VIDEO_NAME = "video.mp4"
-CLASSIFIER_NAME = "team_classifier.pkl"
+
+
+def game_paths(game: str) -> dict[str, str]:
+    base = f"{VOL_PATH}/games/{game}"
+    return {
+        "base": base,
+        "video": f"{base}/video.mp4",
+        "classifier": f"{base}/team_classifier.pkl",
+        "raw": f"{base}/raw",
+    }
+
 
 image = (
     modal.Image.from_registry("nvidia/cuda:12.4.1-devel-ubuntu22.04", add_python="3.11")
@@ -90,7 +102,7 @@ def _video_size(path: str) -> tuple[int, int]:
 
 
 @app.function(gpu="L4", secrets=secrets, volumes={VOL_PATH: vol}, timeout=3600)
-def fit_teams(start_s: float, end_s: float, n_samples: int = 160) -> dict:
+def fit_teams(game: str, start_s: float, end_s: float, n_samples: int = 160) -> dict:
     import cv2
     import numpy as np
     import supervision as sv
@@ -99,7 +111,9 @@ def fit_teams(start_s: float, end_s: float, n_samples: int = 160) -> dict:
     from basketball_plays.schema import PLAYER_CLASSES
     from basketball_plays.team import TeamClassifier, center_crop_boxes, crop
 
-    path = f"{VOL_PATH}/{VIDEO_NAME}"
+    paths = game_paths(game)
+    path = paths["video"]
+    os.makedirs(paths["base"], exist_ok=True)
     model = get_model(model_id=PLAYER_MODEL_ID)
     cap = cv2.VideoCapture(path)
     src_fps = cap.get(cv2.CAP_PROP_FPS)
@@ -119,13 +133,15 @@ def fit_teams(start_s: float, end_s: float, n_samples: int = 160) -> dict:
     cap.release()
     clf = TeamClassifier(device="cuda")
     clf.fit(crops)
-    clf.save(f"{VOL_PATH}/{CLASSIFIER_NAME}")
+    clf.save(paths["classifier"])
     vol.commit()
     return {"n_crops": len(crops), "brightness": clf.brightness}
 
 
 @app.function(gpu="L4", secrets=secrets, volumes={VOL_PATH: vol}, timeout=3600)
-def process_chunk(chunk_id: int, start_s: float, end_s: float, fps: float, ocr_every: int = 10) -> str:
+def process_chunk(
+    game: str, chunk_id: int, start_s: float, end_s: float, fps: float, ocr_every: int = 10
+) -> str:
     import numpy as np
     import supervision as sv
     from inference import get_model
@@ -136,11 +152,12 @@ def process_chunk(chunk_id: int, start_s: float, end_s: float, fps: float, ocr_e
     from basketball_plays.team import TeamClassifier, center_crop_boxes, crop
     from basketball_plays.video import shot_changed
 
-    path = f"{VOL_PATH}/{VIDEO_NAME}"
+    paths = game_paths(game)
+    path = paths["video"]
     player_model = get_model(model_id=PLAYER_MODEL_ID)
     kp_model = get_model(model_id=KEYPOINT_MODEL_ID)
     ocr_model = get_model(model_id=OCR_MODEL_ID)
-    clf = TeamClassifier(device="cuda").load(f"{VOL_PATH}/{CLASSIFIER_NAME}")
+    clf = TeamClassifier(device="cuda").load(paths["classifier"])
 
     size = _video_size(path)
     tracker = sv.ByteTrack(frame_rate=int(fps), lost_track_buffer=int(fps * 2))
@@ -148,7 +165,7 @@ def process_chunk(chunk_id: int, start_s: float, end_s: float, fps: float, ocr_e
     prev_hist = None
     id_base = chunk_id * 1_000_000
 
-    out_path = f"{VOL_PATH}/raw/frames_{chunk_id:02d}.jsonl"
+    out_path = f"{paths['raw']}/frames_{chunk_id:02d}.jsonl"
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
     n = 0
     with open(out_path, "w") as f:
@@ -235,22 +252,42 @@ def process_chunk(chunk_id: int, start_s: float, end_s: float, fps: float, ocr_e
 
 @app.local_entrypoint()
 def main(
-    video: str = "data/duke_michigan_q1.mp4",
+    video: str,
+    game: str,
     start: float = 0.0,
-    end: float = 2135.0,
+    end: float = -1.0,
     fps: float = 10.0,
     chunk: float = 300.0,
-    out_dir: str = "data/raw",
+    out_dir: str = "",
     skip_upload: bool = False,
     skip_fit: bool = False,
+    max_cost: float = 10.0,
+    cost_per_minute: float = 0.09,
 ):
+    import subprocess
+
+    if end < 0:
+        end = float(subprocess.check_output(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", video]
+        ).strip())
+    minutes = (end - start) / 60
+    est = minutes * cost_per_minute
+    print(f"estimated cost: {minutes:.1f} video minutes x ${cost_per_minute:.2f} = ${est:.2f}")
+    if est > max_cost:
+        raise SystemExit(
+            f"estimate ${est:.2f} exceeds --max-cost {max_cost}; "
+            "pass a higher --max-cost to proceed"
+        )
+
+    out_dir = out_dir or f"data/games/{game}/raw"
+    paths = game_paths(game)
     if not skip_upload:
-        print(f"uploading {video} to volume ...")
+        print(f"uploading {video} to {paths['video']} ...")
         with vol.batch_upload(force=True) as batch:
-            batch.put_file(video, f"/{VIDEO_NAME}")
+            batch.put_file(video, paths["video"][len(VOL_PATH):])
     meta = {"start": start, "end": end, "fps": fps}
     if not skip_fit:
-        fit = fit_teams.remote(start, end)
+        fit = fit_teams.remote(game, start, end)
         print("team classifier:", fit)
         meta["cluster_brightness"] = fit["brightness"]
         meta["n_crops"] = fit["n_crops"]
@@ -262,13 +299,13 @@ def main(
     bounds = []
     s = start
     while s < end:
-        bounds.append((len(bounds), s, min(end, s + chunk), fps))
+        bounds.append((game, len(bounds), s, min(end, s + chunk), fps))
         s += chunk
     print(f"processing {len(bounds)} chunks ...")
-    paths = list(process_chunk.starmap(bounds))
+    result_paths = list(process_chunk.starmap(bounds))
 
     Path(out_dir).mkdir(parents=True, exist_ok=True)
-    for p in paths:
+    for p in result_paths:
         rel = p[len(VOL_PATH) + 1:]
         data = b"".join(vol.read_file(rel))
         local = Path(out_dir) / Path(p).name

@@ -615,8 +615,8 @@ function mountAnim(key){
     if (raf) { stop(); } else { last = 0; play.textContent = "❚❚"; raf = requestAnimationFrame(step); }
   });
   range.addEventListener("input", () => { stop(); i = +range.value; show(); });
-  box.addEventListener("anim:draw", show);
   box._draw = show;
+  box._stop = stop;
   return box;
 }
 
@@ -1001,6 +1001,7 @@ function renderBrowse(){
   card.appendChild(body);
   root.appendChild(card);
 
+  let currentAnim = null;
   function fillRecords(){
     rs.innerHTML = "";
     if (!gs.value) gs.value = gids[0];
@@ -1020,8 +1021,10 @@ function renderBrowse(){
     const m = metaOf(key);
     const a = DATA.assign[key] || {};
     const d = DATA.defense[key] || {};
+    if (currentAnim && currentAnim._stop) currentAnim._stop();
     body.innerHTML = "";
-    body.appendChild(mountAnim(key));
+    currentAnim = mountAnim(key);
+    body.appendChild(currentAnim);
     const right = el("div");
     right.appendChild(el("h3", null, keyTitle(key)));
     const dl = el("dl", "kv");

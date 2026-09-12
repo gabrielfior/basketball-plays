@@ -201,6 +201,56 @@ Only the `espn` layout has been exercised through a real ingest so far; `cbs`, `
 `cbssn` have fixtures and pass `probe_scoreboard.py` but no game using them has been run through
 `ingest_game.py` yet.
 
+## Set discovery and labelling
+
+```bash
+uv run python scripts/refresh_plays.py                # full refresh: coverage, features, clusters, defence, page
+uv run python scripts/refresh_plays.py --skip-cluster  # keep clusters.json and montages/ (cluster ids stay put)
+```
+
+Runs, in order: `coverage_report.py` (aggregates every game's `halfcourt.jsonl` into
+`data/plays/halfcourt.jsonl` and writes `data/plays/coverage.md`), `build_features.py`
+(per-record feature vectors), `cluster_plays.py` (candidate sets by clustering, skipped by
+`--skip-cluster`), `classify_defense.py` (man/zone per possession) and `build_page.py` (the
+labelling page). Each step prints its own summary; the refresh script prints one `==` line per
+step plus the final page path and size.
+
+Outputs, all under `data/plays/` (gitignored except `labels.json`):
+
+| File | From | What it is |
+|---|---|---|
+| `halfcourt.jsonl` | `coverage_report.py` | every ingested game's half-court records, concatenated |
+| `coverage.md` | `coverage_report.py` | per-game acceptance table |
+| `features.npz` + `features_index.json` | `build_features.py` | per-record feature vectors (`X`, `H`, `S` arrays) plus row metadata; see the parquet note below |
+| `clusters.json` | `cluster_plays.py` | cluster assignments, centroids, k, silhouette, stability, per-cluster stats |
+| `montages/cluster_<c>.png` | `cluster_plays.py` | nine setup-frame snapshots nearest each cluster's centroid |
+| `defense.json` | `classify_defense.py` | man/zone/unknown label plus confidence per possession |
+| `page/index.html` | `build_page.py` | the offline labelling page (self-contained, works from `file://`) |
+| `labels.json` | the page's Export tab | the user's cluster names, validation labels and defence corrections; committed |
+
+Naming clusters and exporting labels: open `data/plays/page/index.html`, go to the Clusters tab,
+name every cluster you recognise (merge look-alikes, discard noise) -- decisions autosave to this
+browser's `localStorage` as you go. When ready to keep them, open the Export tab, copy the JSON
+and paste it over `data/plays/labels.json`, then commit that file. Re-clustering after adding
+games renumbers the clusters (KMeans is refit on a different, larger row set), so names keyed by
+cluster id in `labels.json` can end up pointing at the wrong set: export first, then either accept
+that the new clusters need renaming, or run the refresh with `--skip-cluster` to keep the old
+`clusters.json` (and therefore the old ids) while you finish naming. A future task may add
+centroid matching to carry names across a re-cluster automatically.
+
+Numbers from a refresh on the 7 games ingested so far (out of 27 registered): 254 dead-ball
+feature rows, clustering fit on 155 setup-frame rows (99 more assigned to the nearest centroid
+afterwards), k=9, silhouette 0.088, stability ARI 0.454, defence labels man 78 / zone 58 / unknown
+118, page 3.72 MB. The validation sample (36 possessions) is drawn entirely from held-out splits,
+which today means the one `ncaa`-layout game ingested (Siena) -- every other ingested game is
+still `train`, so this is a small and unbalanced corpus; treat cluster shapes, the defence rule
+and validation-sample coverage as provisional until more games, especially more held-out ones,
+are ingested.
+
+`features.npz` / `features_index.json` replace the parquet file an earlier version of this
+pipeline used: parquet needs pandas and pyarrow, and a plain NumPy `.npz` (arrays) plus a JSON
+index (row metadata, roster order) covers the same data without adding that dependency.
+
 ## Output format: `trajectories.jsonl`
 
 One JSON object per possession:

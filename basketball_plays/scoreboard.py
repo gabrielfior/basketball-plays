@@ -109,18 +109,25 @@ def parse_clock(text: str) -> tuple[float | None, str | None]:
     return cands[0] if cands else (None, None)
 
 
-def read_frame(frame: np.ndarray, t: float) -> ScoreboardRead:
+def read_frame(frame: np.ndarray, t: float, regions: dict | None = None,
+               invert: bool = False) -> ScoreboardRead:
+    """OCR one frame's scoreboard. `regions` defaults to the ESPN boxes; `invert` flips the
+    crop first, for layouts whose digits sit on a busy light ground."""
+    regions = REGIONS if regions is None else regions
+
     def crop(key):
-        x1, y1, x2, y2 = REGIONS[key]
-        return frame[y1:y2, x1:x2]
+        x1, y1, x2, y2 = regions[key]
+        c = frame[y1:y2, x1:x2]
+        return cv2.bitwise_not(c) if invert else c
 
     clock, clock_text = parse_clock(ocr_digits(crop("clock")))
     return ScoreboardRead(t=round(t, 3), clock=clock, clock_text=clock_text,
-                          away=parse_score(ocr_digits(crop("away"))), home=parse_score(ocr_digits(crop("home"))))
+                          away=parse_score(ocr_digits(crop("away"))),
+                          home=parse_score(ocr_digits(crop("home"))))
 
 
-def _read_times(args: tuple[str, list[float]]) -> list[ScoreboardRead]:
-    video, times = args
+def _read_times(args: tuple[str, list[float], dict, bool]) -> list[ScoreboardRead]:
+    video, times, regions, invert = args
     cap = cv2.VideoCapture(video)
     fps = cap.get(cv2.CAP_PROP_FPS) or 60.0
     out = []
@@ -129,24 +136,32 @@ def _read_times(args: tuple[str, list[float]]) -> list[ScoreboardRead]:
             cap.set(cv2.CAP_PROP_POS_FRAMES, int(round(t * fps)))
             ok, frame = cap.read()
             if ok:
-                out.append(read_frame(frame, float(t)))
+                if frame.shape[1] != 1280 or frame.shape[0] != 720:
+                    frame = cv2.resize(frame, (1280, 720))
+                out.append(read_frame(frame, float(t), regions=regions, invert=invert))
     finally:
         cap.release()
     return out
 
 
-def read_timeline(video: str, start_s: float, end_s: float, every_s: float = 1.0, workers: int = 8) -> list[ScoreboardRead]:
+def read_timeline(video: str, start_s: float, end_s: float, every_s: float = 1.0,
+                  workers: int = 8, layout: str = "espn") -> list[ScoreboardRead]:
     """OCR the scoreboard every `every_s` seconds, spreading the timestamps over worker threads.
 
+    `layout` names the broadcaster's scoreboard graphic (see basketball_plays.broadcasts).
     Threads are enough: tesseract runs as a subprocess and OpenCV decoding releases the GIL;
     forking a process pool after importing OpenCV is unreliable on macOS.
     """
     from concurrent.futures import ThreadPoolExecutor
 
+    from basketball_plays.broadcasts import get_layout  # here: broadcasts imports this module
+
+    lay = get_layout(layout)
     times = [float(t) for t in np.arange(start_s, end_s, every_s)]
     chunks = [times[i::workers] for i in range(workers)]
+    args = [(video, c, lay.regions, lay.invert) for c in chunks if c]
     with ThreadPoolExecutor(max_workers=workers) as ex:
-        results = list(ex.map(_read_times, [(video, c) for c in chunks if c]))
+        results = list(ex.map(_read_times, args))
     return sorted((r for rs in results for r in rs), key=lambda r: r.t)
 
 

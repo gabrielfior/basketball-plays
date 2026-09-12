@@ -87,7 +87,9 @@ data/games/<espn_id>/
   trajectories.jsonl   Stage B output: possessions with court-coordinate trajectories
   scoreboard_raw.jsonl OCR'd clock/score reads, one per second
   halfcourt.jsonl      Duke half-court possession records, one per ESPN interval
-  coverage.json        per-period counts: intervals, located, dead-ball, dead-ball-with-setup
+  coverage.json        per-period counts plus whole-game OCR/ESPN quality (see below)
+  spans_used.json      the period spans extraction actually used, to detect drift later
+  cost.json            the gpu step's cost estimate, parsed from its output
   game.json            the registry entry, written after a full run
 ```
 
@@ -104,16 +106,49 @@ uv run python scripts/ingest_game.py 401817238               # run every step, s
 uv run python scripts/ingest_game.py 401817238 --steps gpu    # run one step
 uv run python scripts/ingest_game.py 401817238 --force halfcourt --steps halfcourt  # redo a step
 uv run python scripts/ingest_game.py 401817238 --max-cost 5   # lower the GPU cost ceiling (10)
+uv run python scripts/ingest_game.py 401817238 --allow-period-mismatch  # ignore a clash
 ```
 
-The `gpu` step prints an estimated cost (video minutes x $0.09) before doing anything remote and
-refuses to proceed above `--max-cost`.
+`--force` is transitive: `--force ocr` also redoes `extract`, `annotate` and `halfcourt`, because
+a redone step invalidates everything computed from it. The expanded set is printed before the run
+starts.
+
+Before extraction, annotation and the half-court records, the number of period spans detected in
+the scoreboard timeline is cross-checked against the highest period number in ESPN's play-by-play
+(the count that says whether the game went to overtime). A disagreement means the spans are not
+the game's periods, so the run stops with exit code 2 and prints both counts and the detected
+boundaries; `--allow-period-mismatch` continues anyway and records `"period_check": "mismatch"` in
+`coverage.json`. A scoreboard timeline yielding *no* spans is likewise fatal in
+`extract_trajectories.py` (pass `--allow-no-periods` to fall back to the time-windowed offense
+rule instead). Extraction records the spans it used in `spans_used.json`; the `halfcourt` step
+warns when the spans it detects no longer match them.
+
+The `gpu` step prints an estimated cost (video minutes x $0.09, a conservative ceiling: the
+Michigan game actually billed $0.064/min) before doing anything remote and refuses to proceed
+above `--max-cost`; the estimate is saved to `cost.json` and reported as `cost_estimate` in
+`coverage.json`. Chunks on Modal resume: a chunk whose `frames_XX.jsonl` is already on the volume
+returns immediately, so a run that died part-way is retried with the same command plus
+`--skip-upload --skip-fit` (printed as a hint when a run fails, and `--force-chunks` redoes the
+finished chunks).
+
+`coverage.json` carries, besides the per-period counts (`intervals`, `located`, `dead_ball`,
+`dead_ball_with_setup`, `start_types`): `layout`, `expected_periods`, `detected_periods`,
+`period_check`, `ocr_reads` and the `clock_trust_rate` / `score_trust_rate` of the whole game's
+cleaned timeline, `espn_agree` / `espn_disagree` (possessions where ESPN's points and the
+scoreboard delta both exist, and agree or not), and `cost_estimate` when the `gpu` step ran.
+
+When the automatic cluster-to-team decision is wrong for a game, re-run extraction with
+`--team-map "0=<team>"` (e.g. `--team-map "0=North Carolina"`): the name must be one of that
+game's two teams, and the other cluster gets the other team.
 
 Each game's broadcast uses one of five scoreboard graphic layouts
-(`basketball_plays/broadcasts.py`), set per game in `games.json` and picked automatically by the
-`ocr`/`annotate` steps: `espn` (ESPN, ESPN2, ACC Network), `cbs`, `ncaa` (NCAA tournament), `cw`
-(The CW) and `cbssn` (CBS Sports Network); each has a fixture frame under
-`tests/fixtures/scoreboards/`. Check a layout's regions against a real frame with:
+(`basketball_plays/broadcasts.py`), set per game in `games.json`: `espn` (ESPN, ESPN2, ACC
+Network), `cbs`, `ncaa` (NCAA tournament), `cw` (The CW) and `cbssn` (CBS Sports Network); each
+has a fixture frame under `tests/fixtures/scoreboards/`. `ingest_game.py` passes the registry's
+layout to both the `ocr` step and the `annotate` step (`--layout`, used only when annotation is
+asked to read the video itself rather than reuse the OCR timeline), along with the game's ESPN id
+(`--espn-id`); run standalone, both scripts default to the `espn` layout and the reference
+game. Check a layout's regions against a real frame with:
 
 ```bash
 uv run python scripts/probe_scoreboard.py data/games/<espn_id>/video.mp4 --t 900 --layout cbs
@@ -134,7 +169,10 @@ spans), per-period annotation and half-court records:
 | 2 | 2198.3 - 4642.3 | 32 | 30 | 17 | 9 (53%) |
 
 Two periods were detected at the expected boundary (period 2 starts at video 36.6 min, the
-expected half-time mark).
+expected half-time mark), matching the two periods in ESPN's play-by-play (`"period_check":
+"ok"`). Over the whole game the cleaned scoreboard timeline has 4,634 reads with the clock
+trusted on 41% and the score on 72% of them, and ESPN's per-possession points agree with the
+scoreboard delta on 144 possessions against 9 disagreements.
 
 An earlier run of this smoke test showed a much lower period-1 setup rate (3 of 16 dead-ball
 intervals, 19%) than period 2's. The cause was the offense map: it was learned once over the

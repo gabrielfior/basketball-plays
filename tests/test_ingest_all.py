@@ -1,4 +1,5 @@
 import importlib.util
+import sys
 from pathlib import Path
 
 spec = importlib.util.spec_from_file_location(
@@ -58,3 +59,48 @@ def test_home_check_unknown_when_duke_not_in_summary():
     g = make_game("1", "2026-01-01", "X", "espn", "train", home=True)
     summary = summary_with("Michigan", "Kansas")
     assert IA.home_check(g, summary) == "unknown"
+
+
+def test_home_check_never_raises_on_a_malformed_summary():
+    g = make_game("1", "2026-01-01", "X", "espn", "train", home=True)
+    assert IA.home_check(g, {}) == "unknown"
+    assert IA.home_check(g, {"header": {"competitions": []}}) == "unknown"
+
+
+def test_merge_status_keeps_prior_cost_when_new_attempt_has_none():
+    old = {"cost": 6.99, "attempts": [{"returncode": 0, "seconds": 100, "cost": 6.99}],
+           "home_check": "ok"}
+    new = {"returncode": 0, "cost": None, "seconds": 5, "tail": [], "home_check": "ok"}
+    merged = IA.merge_status(old, new)
+    assert merged["cost"] == 6.99
+    assert merged["attempts"] == [{"returncode": 0, "seconds": 100, "cost": 6.99},
+                                   {"returncode": 0, "seconds": 5, "cost": None}]
+
+
+def test_merge_status_from_scratch_creates_the_attempts_list():
+    new = {"returncode": 0, "cost": 6.99, "seconds": 120, "tail": [], "home_check": "ok"}
+    merged = IA.merge_status(None, new)
+    assert merged["cost"] == 6.99
+    assert merged["attempts"] == [{"returncode": 0, "seconds": 120, "cost": 6.99}]
+
+
+def test_merge_status_without_an_attempt_leaves_cost_and_attempts_untouched():
+    old = {"cost": 6.99, "attempts": [{"returncode": 0, "seconds": 120, "cost": 6.99}]}
+    merged = IA.merge_status(old, {"home_check": "mismatch"})
+    assert merged["cost"] == 6.99
+    assert merged["attempts"] == old["attempts"]
+    assert merged["home_check"] == "mismatch"
+
+
+def test_dry_run_never_calls_subprocess_or_writes_status(monkeypatch, tmp_path):
+    def boom(*_args, **_kwargs):
+        raise AssertionError("subprocess must not be called in --dry-run")
+
+    monkeypatch.setattr(IA.subprocess, "run", boom)
+    monkeypatch.setattr(IA.subprocess, "Popen", boom)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(sys, "argv", ["ingest_all.py", "--dry-run", "--max-games", "1"])
+
+    IA.main()
+
+    assert not (tmp_path / "data" / "games" / "status.json").exists()

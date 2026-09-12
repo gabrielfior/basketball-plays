@@ -30,6 +30,8 @@ FIRST_PER_LAYOUT = {
 # layout games so a layout bug surfaces before the big ESPN-layout run.
 WAVE1 = ["401817231", "401820644", "401856478"]
 MIN_FREE_GB = 20
+DEFAULT_GAME_TIMEOUT = 4 * 3600
+PROGRESS_EVERY_S = 60
 COST_RE = re.compile(r"estimated cost: .* = \$([0-9.]+)")
 
 
@@ -53,24 +55,77 @@ def home_check(game: Game, summary: dict) -> str:
 
     "ok" when they agree, "mismatch" when they disagree (a likely wrong youtube_id/espn_id
     pairing, worth checking before spending GPU on the game), "unknown" when `summary` doesn't
-    identify a Duke side at all.
+    identify a Duke side at all, or is too malformed to parse. A malformed payload is exactly
+    what a wrong youtube_id/espn_id pairing can produce, so this must never raise.
     """
     try:
         info = gameinfo.from_summary(summary)
-    except (KeyError, ValueError):
+        if info.home == "Duke":
+            espn_home = True
+        elif info.away == "Duke":
+            espn_home = False
+        else:
+            return "unknown"
+        return "ok" if espn_home == game.home else "mismatch"
+    except Exception:  # noqa: BLE001 - a malformed summary (wrong id pairing) must not crash
         return "unknown"
-    if info.home == "Duke":
-        espn_home = True
-    elif info.away == "Duke":
-        espn_home = False
-    else:
-        return "unknown"
-    return "ok" if espn_home == game.home else "mismatch"
+
+
+def merge_status(old: dict | None, new: dict) -> dict:
+    """Merge one attempt's fields (`new`) into a game's previous status record (`old`).
+
+    A retry whose GPU step is skipped (already done, so no "estimated cost" line) yields
+    `cost: None` for that attempt; naively overwriting the record would erase a real prior
+    spend and under-count the running total that gates `--max-total-cost`. So: keep the last
+    known non-None `cost`, and append the attempt's returncode/seconds/cost to a running
+    `attempts` list instead of keeping only the most recent one. A `new` with no `"returncode"`
+    (e.g. a home/away mismatch recorded without ever running a subprocess) merges its other
+    fields (such as `home_check`) without touching `cost` or `attempts`.
+    """
+    old = old or {}
+    merged = {**old, **new}
+    if "returncode" not in new:
+        merged["cost"] = old.get("cost")
+        merged["attempts"] = old.get("attempts", [])
+        return merged
+    attempts = list(old.get("attempts", []))
+    attempts.append({"returncode": new.get("returncode"), "seconds": new.get("seconds"),
+                      "cost": new.get("cost")})
+    merged["attempts"] = attempts
+    merged["cost"] = new.get("cost") if new.get("cost") is not None else old.get("cost")
+    return merged
 
 
 def _write_status(status_path: Path, status: dict) -> None:
     status_path.parent.mkdir(parents=True, exist_ok=True)
     status_path.write_text(json.dumps(status, indent=2))
+
+
+def run_streamed(cmd: list[str], log_path: Path, timeout_s: float) -> tuple[int | str, int]:
+    """Run `cmd`, streaming its combined stdout/stderr straight to `log_path`.
+
+    Polls the child every second so it can print a one-line progress note every
+    `PROGRESS_EVERY_S` seconds while waiting, and enforces `timeout_s`: past it, the child is
+    killed and the returncode is the string "timeout". Returns `(returncode, elapsed_seconds)`.
+    """
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    t0 = time.time()
+    next_ping = t0 + PROGRESS_EVERY_S
+    with log_path.open("w") as log_f:
+        proc = subprocess.Popen(cmd, stdout=log_f, stderr=subprocess.STDOUT)
+        while True:
+            try:
+                rc = proc.wait(timeout=1)
+                return rc, round(time.time() - t0)
+            except subprocess.TimeoutExpired:
+                now = time.time()
+                if now - t0 > timeout_s:
+                    proc.kill()
+                    proc.wait()
+                    return "timeout", round(now - t0)
+                if now >= next_ping:
+                    print(f"  ... still running ({round(now - t0)}s elapsed)")
+                    next_ping = now + PROGRESS_EVERY_S
 
 
 def main() -> None:
@@ -83,11 +138,16 @@ def main() -> None:
                      help=f"shortcut for --only {','.join(WAVE1)}")
     ap.add_argument("--max-games", type=int, default=None)
     ap.add_argument("--max-total-cost", type=float, default=160.0)
+    ap.add_argument("--game-timeout", type=float, default=DEFAULT_GAME_TIMEOUT,
+                     help="seconds before a stuck ingest_game.py subprocess is killed")
     ap.add_argument("--prune-video", action="store_true")
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
     if args.wave1:
-        args.only = ",".join(WAVE1)
+        if args.only:
+            print("warning: both --wave1 and --only given; using --only")
+        else:
+            args.only = ",".join(WAVE1)
 
     games = ordered(load_registry())
     if args.layouts:
@@ -133,10 +193,10 @@ def main() -> None:
             espn_proc = subprocess.run(espn_cmd, capture_output=True, text=True, check=False)
             if espn_proc.returncode != 0 or not paths.espn_summary.exists():
                 out = espn_proc.stdout + espn_proc.stderr
-                status[g.espn_id] = {
+                status[g.espn_id] = merge_status(status.get(g.espn_id), {
                     "returncode": espn_proc.returncode, "cost": None, "seconds": None,
                     "tail": out.splitlines()[-20:], "home_check": "unknown",
-                }
+                })
                 _write_status(status_path, status)
                 print(f"FAILED {g.espn_id} fetching the ESPN summary "
                       f"(rc={espn_proc.returncode}); continuing")
@@ -146,25 +206,26 @@ def main() -> None:
         if check == "mismatch":
             print(f"WARNING: home/away mismatch for {g.espn_id} ({g.opponent}, {g.date}); "
                   "likely wrong youtube_id/espn_id pairing; skipping GPU spend until resolved")
-            status[g.espn_id] = {"home_check": check}
+            status[g.espn_id] = merge_status(status.get(g.espn_id), {"home_check": check})
             _write_status(status_path, status)
             continue
 
+        log_path = paths.root / "ingest.log"
+        print(f"log: {log_path}")
         print("+", " ".join(cmd))
-        t0 = time.time()
-        proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
-        out = proc.stdout + proc.stderr
+        rc, elapsed = run_streamed(cmd, log_path, args.game_timeout)
+        out = log_path.read_text() if log_path.exists() else ""
         m = COST_RE.search(out)
         cost = float(m.group(1)) if m else None
         total += cost or 0
-        status[g.espn_id] = {
-            "returncode": proc.returncode, "cost": cost, "seconds": round(time.time() - t0),
+        status[g.espn_id] = merge_status(status.get(g.espn_id), {
+            "returncode": rc, "cost": cost, "seconds": elapsed,
             "tail": out.splitlines()[-20:], "home_check": check,
-        }
+        })
         _write_status(status_path, status)
         print(out.splitlines()[-1] if out.strip() else "(no output)")
-        if proc.returncode != 0:
-            print(f"FAILED {g.espn_id} (rc={proc.returncode}); continuing")
+        if rc != 0:
+            print(f"FAILED {g.espn_id} (rc={rc}); continuing")
             continue
         if args.prune_video and paths.halfcourt.exists() and paths.video.exists():
             paths.video.unlink()

@@ -36,14 +36,28 @@ def test_unknown_layout_raises():
     ("cw_wake_990.jpg", "cw", 594, 16, 11),         # 9:54, Wake Forest 16 at Duke 11 —
                                                      # one-digit minutes
     ("cbssn_army.jpg", "cbssn", 424, 29, 20),       # 7:04, Duke 29 at Army 20
+    # Shot clock hidden: the clock panel widens and centres, shifting the digits right of the
+    # normal-state region. Extracted at T=2250.1 rather than the integer second (see
+    # task-4l-report.md): at T=2250.0 the away-score crop's whole-crop OCR ties 2-2 between "01"
+    # and "51" and the tie-break happens to keep the wrong one, a pre-existing, JPEG-compression
+    # -sensitive artifact in ocr_digits unrelated to this task's clock fix.
+    ("cbssn_army_2250.jpg", "cbssn", 1149, 51, 33),  # 19:09, Army 51 at Duke 33 (shot clock
+                                                      # hidden; needs the wider alternative region)
+    ("cbssn_army_3000.jpg", "cbssn", 751, 70, 36),   # 12:31, Army 70 at Duke 36 (shot clock shown;
+                                                      # primary region)
+    ("cbssn_army_2100.jpg", "cbssn", 9.2, 48, 30),   # 0:09.2, a sub-minute tenths read
 ])
 def test_layouts_read_the_fixture_frames(name, layout, clock, away, home):
     frame = cv2.imread(str(FIX / name))
     assert frame is not None and frame.shape[:2] == (720, 1280)
     lay = B.get_layout(layout)
     r = sb.read_frame(frame, 0.0, regions=lay.regions, invert=lay.invert,
-                      alternatives=lay.alternatives)
+                      alternatives=lay.alternatives, compete=lay.compete)
     assert (r.clock, r.away, r.home) == (clock, away, home)
+
+
+def test_clock_rank_orders_colon_reads_over_tenths_over_none():
+    assert sb._clock_rank("19:09") > sb._clock_rank("19.0") > sb._clock_rank(None)
 
 
 def test_read_frame_returns_none_clock_when_no_alternative_parses():

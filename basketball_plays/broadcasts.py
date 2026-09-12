@@ -20,6 +20,12 @@ class Layout:
     # Region sets to fall back to (in order) when `regions` doesn't yield a parseable clock,
     # for a broadcast that alternates between two scoreboard graphics. See scoreboard.read_frame.
     alternatives: tuple[dict[str, Region], ...] = ()
+    # When True, `regions` and every entry in `alternatives` are read unconditionally (each
+    # alternative merged over `regions`, so it may override only some keys) and the best-scoring
+    # clock read wins, rather than only falling back to `alternatives` on parse failure. For a
+    # broadcast whose clock shifts position depending on another element's visibility, where both
+    # region sets can produce a plausible-but-wrong read and the fallback order can't be trusted.
+    compete: bool = False
 
 
 LAYOUTS: dict[str, Layout] = {
@@ -53,10 +59,20 @@ LAYOUTS: dict[str, Layout] = {
                         "home": (878, 652, 950, 694)},
                  note="The CW bottom bar (fixtures cw_wake.jpg, cw_wake_990/1500/2500/3500.jpg)"),
     # CBS Sports Network: same family as CBS but shifted, with the clock in a light grey panel
-    # left of the shot clock. The NHL ticker below the bar stays out of every box.
+    # left of the shot clock. The NHL ticker below the bar stays out of every box. When the shot
+    # clock panel is hidden (e.g. under 35s left in the half, so it has nothing to show), the
+    # clock panel widens and centres, shifting the digits right far enough that the normal-state
+    # region clips the last one ("19:09" -> "19:0"). A single wider box can't cover both states:
+    # widened enough to catch the shifted digits, it clips into the shot clock's first digit when
+    # the panel is in its normal position. So both region sets are read and compete on the
+    # ranking in scoreboard._clock_rank (see fixtures cbssn_army.jpg, cbssn_army_2250.jpg,
+    # cbssn_army_3000.jpg, cbssn_army_2100.jpg).
     "cbssn": Layout("cbssn", {"away": (492, 613, 556, 661), "clock": (1038, 618, 1116, 659),
                               "home": (890, 613, 962, 661)},
-                    note="CBS Sports Network bottom bar (fixture cbssn_army.jpg)"),
+                    alternatives=({"clock": (1060, 618, 1140, 659)},),
+                    compete=True,
+                    note="CBS Sports Network bottom bar (fixture cbssn_army.jpg), competing "
+                         "against the wider clock box used when the shot clock panel is hidden"),
 }
 
 

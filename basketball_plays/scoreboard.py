@@ -233,6 +233,20 @@ def parse_clock(text: str) -> tuple[float | None, str | None]:
     return cands[0] if cands else (None, None)
 
 
+def _clock_rank(text: str | None) -> tuple[int, int]:
+    """Rank a `ScoreboardRead.clock_text` for choosing among competing region-set reads (see
+    `read_frame`'s `compete` mode): a `m:ss` read beats a sub-minute tenths read (`m.s`), and
+    among equally shaped reads the one with more digits wins (the more complete reading, same
+    tie-break `ocr_digits` uses for whole-crop OCR). None loses to any plausible read; higher
+    tuples win.
+    """
+    if text is None:
+        return (-1, -1)
+    digits = len(re.sub(r"\D", "", text))
+    shape = 1 if re.fullmatch(r"\d{1,2}:\d{2}", text) else 0
+    return (shape, digits)
+
+
 def _read_regions(frame: np.ndarray, t: float, regions: dict, invert: bool) -> ScoreboardRead:
     def crop(key):
         x1, y1, x2, y2 = regions[key]
@@ -247,15 +261,29 @@ def _read_regions(frame: np.ndarray, t: float, regions: dict, invert: bool) -> S
 
 def read_frame(frame: np.ndarray, t: float, regions: dict | None = None,
                invert: bool = False,
-               alternatives: tuple[dict, ...] = ()) -> ScoreboardRead:
+               alternatives: tuple[dict, ...] = (),
+               compete: bool = False) -> ScoreboardRead:
     """OCR one frame's scoreboard. `regions` defaults to the ESPN boxes; `invert` flips the
     crop first, for layouts whose digits sit on a busy light ground.
 
-    When `regions` doesn't yield a parseable clock, each of `alternatives` is tried in order
-    (a broadcast that alternates between two scoreboard graphics) and the first whose clock
-    parses is kept, with the scores read from that same alternative's regions.
+    When `compete` is False (the default), `regions` is read first and, only when it doesn't
+    yield a parseable clock, each of `alternatives` is tried in order (a broadcast that
+    alternates between two scoreboard graphics) and the first whose clock parses is kept, with
+    the scores read from that same alternative's regions.
+
+    When `compete` is True, `regions` AND every entry in `alternatives` are read unconditionally
+    (each alternative merged over `regions`, so it may override only some keys) and the read
+    whose clock text ranks best under `_clock_rank` is kept, scores included, from that read's
+    region set. Ties keep `regions`' own read (or the earliest-listed alternative among
+    themselves). For a broadcast whose clock shifts position depending on another element's
+    visibility, so neither a single region nor a fallback order can be trusted.
     """
     regions = REGIONS if regions is None else regions
+    if compete:
+        reads = [_read_regions(frame, t, regions, invert)]
+        for alt in alternatives:
+            reads.append(_read_regions(frame, t, {**regions, **alt}, invert))
+        return max(reads, key=lambda r: _clock_rank(r.clock_text))
     result = _read_regions(frame, t, regions, invert)
     if result.clock is not None:
         return result
@@ -267,9 +295,9 @@ def read_frame(frame: np.ndarray, t: float, regions: dict | None = None,
 
 
 def _read_times(
-    args: tuple[str, list[float], dict, bool, tuple[dict, ...]],
+    args: tuple[str, list[float], dict, bool, tuple[dict, ...], bool],
 ) -> list[ScoreboardRead]:
-    video, times, regions, invert, alternatives = args
+    video, times, regions, invert, alternatives, compete = args
     cap = cv2.VideoCapture(video)
     fps = cap.get(cv2.CAP_PROP_FPS) or 60.0
     out = []
@@ -281,7 +309,7 @@ def _read_times(
                 if frame.shape[1] != 1280 or frame.shape[0] != 720:
                     frame = cv2.resize(frame, (1280, 720))
                 out.append(read_frame(frame, float(t), regions=regions, invert=invert,
-                                      alternatives=alternatives))
+                                      alternatives=alternatives, compete=compete))
     finally:
         cap.release()
     return out
@@ -302,7 +330,8 @@ def read_timeline(video: str, start_s: float, end_s: float, every_s: float = 1.0
     lay = get_layout(layout)
     times = [float(t) for t in np.arange(start_s, end_s, every_s)]
     chunks = [times[i::workers] for i in range(workers)]
-    args = [(video, c, lay.regions, lay.invert, lay.alternatives) for c in chunks if c]
+    args = [(video, c, lay.regions, lay.invert, lay.alternatives, lay.compete)
+            for c in chunks if c]
     with ThreadPoolExecutor(max_workers=workers) as ex:
         results = list(ex.map(_read_times, args))
     return sorted((r for rs in results for r in rs), key=lambda r: r.t)

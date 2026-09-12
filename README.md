@@ -73,6 +73,85 @@ mkdir -p data && uvx yt-dlp -f "bestvideo[height<=720][ext=mp4][vcodec^=avc1]+be
    `--sensitivity` appends a setup-rate table over stillness thresholds (max move in feet by
    minimum players), which is how the 1 ft spec value gets checked against measured jitter.
 
+## Many games
+
+Games beyond the reference one live in `games.json` (`espn_id`, `youtube_id`, `date`, `opponent`,
+`home`, `broadcaster`, `layout`, `split`, `note`) and are ingested one at a time into their own
+directory under `data/games/<espn_id>/` (gitignored):
+
+```
+data/games/<espn_id>/
+  video.mp4            downloaded broadcast (yt-dlp, 720p avc1)
+  espn_summary.json    cached ESPN summary (boxscore, play-by-play)
+  raw/frames_XX.jsonl  Stage A (GPU) output, one file per 5-minute chunk
+  trajectories.jsonl   Stage B output: possessions with court-coordinate trajectories
+  scoreboard_raw.jsonl OCR'd clock/score reads, one per second
+  halfcourt.jsonl      Duke half-court possession records, one per ESPN interval
+  coverage.json        per-period counts: intervals, located, dead-ball, dead-ball-with-setup
+  game.json            the registry entry, written after a full run
+```
+
+`scripts/ingest_game.py <espn_id>` runs the seven steps (`download`, `espn`, `gpu`, `extract`,
+`ocr`, `annotate`, `halfcourt`) in order, skipping any step whose output already exists so a
+failed run can be fixed and the same command re-run to resume:
+
+```bash
+uv run python scripts/ingest_game.py 401817238 --dry-run     # print the plan, run nothing
+uv run python scripts/ingest_game.py 401817238               # run every step, skip existing outputs
+uv run python scripts/ingest_game.py 401817238 --steps gpu    # run one step
+uv run python scripts/ingest_game.py 401817238 --force halfcourt --steps halfcourt  # redo a step
+uv run python scripts/ingest_game.py 401817238 --max-cost 5   # lower the GPU cost ceiling (10)
+```
+
+The `gpu` step prints an estimated cost (video minutes x $0.09) before doing anything remote and
+refuses to proceed above `--max-cost`.
+
+Each game's broadcast uses one of five scoreboard graphic layouts
+(`basketball_plays/broadcasts.py`), set per game in `games.json` and picked automatically by the
+`ocr`/`annotate` steps: `espn` (ESPN, ESPN2, ACC Network), `cbs`, `ncaa` (NCAA tournament), `cw`
+(The CW) and `cbssn` (CBS Sports Network); each has a fixture frame under
+`tests/fixtures/scoreboards/`. Check a layout's regions against a real frame with:
+
+```bash
+uv run python scripts/probe_scoreboard.py data/games/<espn_id>/video.mp4 --t 900 --layout cbs
+```
+
+### Smoke test: the whole Michigan game (401817238)
+
+`uv run python scripts/ingest_game.py 401817238` end to end on the full 77.7-minute broadcast
+(Phase 0 only covered the first half): download (1.98 GB), ESPN summary, GPU stage (16 chunks,
+46,618 frames at 10 fps; cost estimate `77.7 video minutes x $0.09 = $6.99`, actual Modal billing
+$5.00), extraction (157 possessions), scoreboard OCR (4,634 reads), per-period annotation and
+half-court records:
+
+| Period | Span (video s) | Intervals | Located | Dead-ball | With setup |
+|---|---|---|---|---|---|
+| 1 | 10.3 - 2198.3 | 36 | 32 | 16 | 3 (19%) |
+| 2 | 2198.3 - 4642.3 | 32 | 30 | 17 | 9 (53%) |
+
+Two periods were detected at the expected boundary (period 2 starts at video 36.6 min, the
+expected half-time mark); interval counts (36 in period 1) and canonical mirroring (player x
+mostly under 47 near setup in both periods, ~90-97% of the sampled positions) match Phase 0. The
+dead-ball setup rate is below Phase 0's 65% in both periods (worst in period 1), outside the
++/-10 point tolerance. Diagnosis: re-running the shared `halfcourt.build_records`/`find_setup` on
+the original Phase 0 trajectories and scoreboard (`data/trajectories.jsonl`,
+`data/scoreboard_raw.jsonl`) exactly reproduces the Phase 0 numbers (36 intervals, 34 located, 20
+dead-ball, 13 with setup), which rules out an algorithm regression, a period-split issue, and an
+attack-direction mis-vote (both periods vote unanimously for one basket, not tied). Period 1 has
+the same 13 full-court intervals as Phase 0, but only 2 of 13 find a still, in-frontcourt frame in
+the fresh full-game pass (Phase 0 found more), even widening the search window from 6 s to 20 s;
+per-frame inspection shows too few Duke players simultaneously tracked and stationary in the
+seconds after these full-court inbounds, while the aggregate per-period stillness rate is actually
+slightly higher than Phase 0's (8.3% vs 4.3% of sampled frames). The likely cause is drift in the
+hosted Roboflow Universe models (this run pulled a fresh `inference-gpu` build, months after Phase
+0) or chunk-boundary effects from processing the full game in 16 parallel 5-minute chunks instead
+of one dedicated clip, rather than a bug in possession segmentation, clock mapping, or outcomes.
+This is a data-quality watchpoint for Phase 1B, not a code change in this task.
+
+Only the `espn` layout has been exercised through a real ingest so far; `cbs`, `ncaa`, `cw` and
+`cbssn` have fixtures and pass `probe_scoreboard.py` but no game using them has been run through
+`ingest_game.py` yet.
+
 ## Output format: `trajectories.jsonl`
 
 One JSON object per possession:

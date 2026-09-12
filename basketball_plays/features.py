@@ -15,6 +15,16 @@ BUCKETS = ("ato", "inbound", "after_score")
 NOT_VISIBLE = Z.N_ZONES  # index 22 in the snapshot one-hot
 
 
+def in_scope(rec: H.HalfcourtRecord) -> bool:
+    """Whether a half-court record is one of the dead-ball possessions this pipeline models.
+
+    Every stage -- features, defence, the page -- has to agree on this, or the row sets drift
+    apart and the per-record keys stop lining up.
+    """
+    return (rec.start_type in ("ato", "dead") and rec.located and not rec.transition
+            and rec.t0 is not None)
+
+
 def bucket(rec: H.HalfcourtRecord) -> str:
     if rec.start_type == "ato":
         return "ato"

@@ -238,14 +238,33 @@ that the new clusters need renaming, or run the refresh with `--skip-cluster` to
 `clusters.json` (and therefore the old ids) while you finish naming. A future task may add
 centroid matching to carry names across a re-cluster automatically.
 
+How k is chosen: the sweep window scales with the corpus rather than flipping at a threshold --
+`k_min` is always 4 and `k_max` is `n_fit // 12` clipped into `[6, 30]`, intersected with
+`--k-min`/`--k-max` (which can only narrow it). Within that window k comes from a
+one-standard-error rule on the silhouette: for each k the per-sample silhouettes give a mean and
+a standard error, and the smallest k whose mean is within one SE of the best mean wins. At a few
+hundred possessions the sweep's peak sits well inside that noise, so taking the raw argmax reads
+structure into sampling error; `clusters.json` keeps both (`k` and `k_best_raw`) plus the whole
+sweep as `{k: {"mean", "se"}}`. Below 400 fit possessions `small_corpus` is set as a graded
+advisory -- not a switch that changes the fit -- and the page says "fewer than 400 fit
+possessions: clusters are provisional". Spec section 5 also lists HDBSCAN for comparison;
+deferred until the corpus is larger than a few hundred rows.
+
 Numbers from a refresh on the 7 games ingested so far (out of 27 registered): 254 dead-ball
 feature rows, clustering fit on 155 setup-frame rows (99 more assigned to the nearest centroid
-afterwards), k=9, silhouette 0.088, stability ARI 0.454, defence labels man 78 / zone 58 / unknown
-118, page 3.72 MB. The validation sample (36 possessions) is drawn entirely from held-out splits,
-which today means the one `ncaa`-layout game ingested (Siena) -- every other ingested game is
-still `train`, so this is a small and unbalanced corpus; treat cluster shapes, the defence rule
-and validation-sample coverage as provisional until more games, especially more held-out ones,
-are ingested.
+afterwards), sweep k = 4..12, k=9 (`k_best_raw` 9 as well), silhouette 0.088, stability ARI 0.454,
+defence labels man 78 / zone 58 / unknown 118, page 3.93 MB. The validation sample (36
+possessions) is drawn entirely from held-out splits, which today means the one `ncaa`-layout game
+ingested (Siena) -- every other ingested game is still `train`, so this is a small and unbalanced
+corpus; treat cluster shapes, the defence rule and validation-sample coverage as provisional until
+more games, especially more held-out ones, are ingested.
+
+The page's Results tab rolls up only the possessions that shaped the taxonomy: training games
+(test/ncaa stay held out for validation) and, by default, fit members only -- 155 of the 254 rows.
+A checkbox widens it to the assigned-only possessions as well (218 training rows), and a caption
+under the tables states which filter is showing. Each Browse and Validation animation also draws a
+thin line per `defense.matchups` pair on the frames it samples, so the matchups the defence
+features are built from are visible; the lines are what the rule saw, not what it concluded.
 
 `features.npz` / `features_index.json` replace the parquet file an earlier version of this
 pipeline used: parquet needs pandas and pyarrow, and a plain NumPy `.npz` (arrays) plus a JSON

@@ -20,6 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from basketball_plays import features as F
 from basketball_plays import gameinfo
+from basketball_plays.features import in_scope
 from basketball_plays.games import load_registry
 from basketball_plays.halfcourt import HalfcourtRecord
 
@@ -32,11 +33,6 @@ def load_records(path: str | Path) -> list[HalfcourtRecord]:
             if line:
                 records.append(HalfcourtRecord.from_dict(json.loads(line)))
     return records
-
-
-def in_scope(rec: HalfcourtRecord) -> bool:
-    return (rec.start_type in ("ato", "dead") and rec.located and not rec.transition
-            and rec.t0 is not None)
 
 
 def duke_roster(games_root: Path = Path("data/games")) -> list[str]:

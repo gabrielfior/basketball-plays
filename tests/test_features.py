@@ -75,3 +75,19 @@ def test_build_rows_assigns_split_from_game():
     rows = F.build_rows([rec([still(1, "A", 28.0, 25.0)])], {"g": "test"})
     assert len(rows) == 1 and rows[0].split == "test" and rows[0].bucket == "inbound"
     assert rows[0].vector.shape == (118,)
+
+
+def test_in_scope_keeps_located_dead_ball_halfcourt_records():
+    assert F.in_scope(rec([], start_type="dead"))
+    assert F.in_scope(rec([], start_type="ato"))
+    r = rec([], start_type="live")
+    assert not F.in_scope(r)
+    r = rec([], start_type="dead")
+    r.transition = True
+    assert not F.in_scope(r)
+    r = rec([], start_type="dead")
+    r.located = False
+    assert not F.in_scope(r)
+    r = rec([], start_type="dead")
+    r.t0 = None
+    assert not F.in_scope(r)

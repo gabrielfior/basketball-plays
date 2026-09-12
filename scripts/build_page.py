@@ -21,11 +21,15 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 
+import numpy as np
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from basketball_plays import defense as D
 from basketball_plays import gameinfo, games, halfcourt
 from basketball_plays import labels as L
 from basketball_plays.court import NCAA
+from basketball_plays.features import in_scope
 
 FPS = 5.0
 FALLBACK_FPS = 2.5
@@ -84,6 +88,12 @@ def sample_animation(rec: halfcourt.HalfcourtRecord, fps: float = FPS,
     one decimal. Records with neither a setup frame nor a `t0` have nothing to animate and
     return None; individual frames outside the tracked window come back empty rather than
     stretching the nearest one.
+
+    `pairs[i]` holds `defense.matchups`' one-to-one attacker-to-defender assignment for frame
+    `i` as `[duke_index, opp_index]` pairs into that frame's own `duke`/`opp` lists (empty when
+    either side has fewer than `defense.MIN_PLAYERS` visible). These are the same nearest-cost
+    matchups the defence features are built from, drawn so the reader can see what the rule saw;
+    they are not the man/zone prediction.
     """
     anchor = rec.setup if rec.setup is not None else rec.t0
     if anchor is None:
@@ -98,7 +108,7 @@ def sample_animation(rec: halfcourt.HalfcourtRecord, fps: float = FPS,
     step = 1.0 / fps
     tol = step / 2 + 1e-6
     n = round((pre + post) * fps) + 1
-    frames_duke, frames_opp, frames_ball = [], [], []
+    frames_duke, frames_opp, frames_ball, frames_pairs = [], [], [], []
     for i in range(n):
         t = anchor - pre + i * step
         td = _nearest(times, t, tol)
@@ -107,7 +117,10 @@ def sample_animation(rec: halfcourt.HalfcourtRecord, fps: float = FPS,
         th = _nearest(htimes, t, tol)
         ball = [round(handler[th][0], 1), round(handler[th][1], 1)] if th is not None else None
         frames_ball.append(ball)
-    return {"fps": fps, "pre": pre, "duke": frames_duke, "opp": frames_opp, "handler": frames_ball}
+        frames_pairs.append([list(pair) for pair in D.matchups(
+            np.array(frames_duke[-1]).reshape(-1, 2), np.array(frames_opp[-1]).reshape(-1, 2))])
+    return {"fps": fps, "pre": pre, "duke": frames_duke, "opp": frames_opp,
+            "handler": frames_ball, "pairs": frames_pairs}
 
 
 def _round_pts(pts) -> list[list[float]]:
@@ -314,6 +327,10 @@ section[hidden]{display:none}
   background:var(--warn-bg); border:1px solid var(--warn-line); color:var(--warn);
   border-radius:8px; padding:9px 12px; font-size:13.5px; margin:0 0 16px;
 }
+#conflict{display:flex; gap:10px; align-items:center; flex-wrap:wrap}
+#conflict[hidden]{display:none}
+#conflict .row{display:flex; gap:8px; margin-left:auto}
+#conflict button.btn{padding:4px 10px; font-size:13px}
 .card{
   background:var(--panel); border:1px solid var(--line); border-radius:10px;
   padding:14px 16px 16px; margin-bottom:14px;
@@ -387,6 +404,8 @@ button.tiny{
 }
 .legend{font-size:12px; color:var(--muted); display:flex; gap:12px; width:100%; flex-wrap:wrap}
 .legend i{display:inline-block; width:9px; height:9px; border-radius:50%; margin-right:4px}
+.legend i.line{height:0; width:14px; border-radius:0; border-top:1px solid var(--thin);
+  vertical-align:middle}
 details.ref{margin:6px 0 2px; font-size:13px}
 details.ref summary{cursor:pointer; color:var(--muted)}
 details.ref img{width:100%; max-width:320px; margin-top:8px; border:1px solid var(--line);
@@ -418,6 +437,7 @@ fieldset legend{font-size:12px; color:var(--muted); padding:0 0 4px}
   </nav>
 </header>
 <main>
+  <div id="conflict" hidden></div>
   <section id="pane-clusters" role="tabpanel"></section>
   <section id="pane-validation" role="tabpanel" hidden></section>
   <section id="pane-results" role="tabpanel" hidden></section>
@@ -433,14 +453,61 @@ const C = DATA.court;
 /* ---------------------------------------------------------------- state */
 
 function blankState(){ return {clusters:{}, validation:{}, defense:{}, version:1}; }
+function stateFrom(src){
+  return {clusters: src.clusters || {}, validation: src.validation || {},
+          defense: src.defense || {}, version: src.version || 1};
+}
+function isEmptyState(st){
+  return !Object.keys(st.clusters).length && !Object.keys(st.validation).length &&
+         !Object.keys(st.defense).length;
+}
+/* Key-order-independent serialisation, so two states that hold the same decisions compare
+   equal no matter what order the maps were built in. */
+function canon(o){
+  if (o === null || typeof o !== "object") return JSON.stringify(o);
+  if (Array.isArray(o)) return "[" + o.map(canon).join(",") + "]";
+  const kv = Object.keys(o).sort().map(k => JSON.stringify(k) + ":" + canon(o[k]));
+  return "{" + kv.join(",") + "}";
+}
+function decisionsOf(st){ return canon([st.clusters, st.validation, st.defense]); }
+
 let S = blankState();
+/* True when this browser has its own saved decisions AND the inlined labels.json is non-empty
+   AND the two disagree -- the page then offers the choice instead of silently preferring one. */
+let labelsConflict = false;
 (function restore(){
   let stored = null;
   try { const raw = localStorage.getItem(LS_KEY); if (raw) stored = JSON.parse(raw); } catch(e){}
-  const src = stored || DATA.labels || {};
-  S = {clusters: src.clusters || {}, validation: src.validation || {},
-       defense: src.defense || {}, version: src.version || 1};
+  const file = stateFrom(DATA.labels || {});
+  S = stored ? stateFrom(stored) : file;
+  labelsConflict = !!stored && !isEmptyState(file) && decisionsOf(S) !== decisionsOf(file);
 })();
+
+function mountConflictBanner(){
+  const box = document.getElementById("conflict");
+  if (!labelsConflict){ box.hidden = true; return; }
+  box.hidden = false;
+  box.className = "banner";
+  box.innerHTML = "";
+  box.appendChild(el("span", null,
+    "Saved decisions in this browser differ from labels.json. "));
+  const row = el("span", "row");
+  const keep = el("button", "btn ghost", "Keep browser");
+  const load = el("button", "btn ghost", "Load labels.json");
+  keep.type = "button"; load.type = "button";
+  keep.addEventListener("click", () => { labelsConflict = false; box.hidden = true; });
+  load.addEventListener("click", () => {
+    S = stateFrom(DATA.labels || {});
+    save();                       // the file's copy replaces this browser's
+    labelsConflict = false;
+    box.hidden = true;
+    validationBuilt = false; browseBuilt = false;
+    const cur = document.querySelector('#tabs button[aria-selected="true"]');
+    show(cur ? cur.dataset.pane : "clusters");
+  });
+  row.appendChild(keep); row.appendChild(load);
+  box.appendChild(row);
+}
 
 let saveTimer = null;
 function save(){
@@ -549,8 +616,18 @@ function drawFrame(F, a, i){
   const dukeC = css.getPropertyValue("--duke").trim() || "#0a5fbd";
   const oppC = css.getPropertyValue("--opp").trim() || "#b23b2c";
   const ballC = css.getPropertyValue("--ball").trim() || "#d97706";
-  ctx.lineWidth = 1.5;
   const on = p => p[0] >= -0.5 && p[0] <= HALF + 0.5 && p[1] >= -0.5 && p[1] <= C.width + 0.5;
+  // Matchups from defense.matchups on these very positions: what the defence rule saw, not
+  // what it concluded. Drawn first so the player markers sit on top of them.
+  const dk = a.duke[i] || [], op = a.opp[i] || [];
+  ctx.strokeStyle = css.getPropertyValue("--thin").trim() || "#a29a8e";
+  ctx.lineWidth = 0.75;
+  ((a.pairs && a.pairs[i]) || []).forEach(pr => {
+    const o = dk[pr[0]], d = op[pr[1]];
+    if (!o || !d || !on(o) || !on(d)) return;
+    ctx.beginPath(); ctx.moveTo(X(o[0]), Y(o[1])); ctx.lineTo(X(d[0]), Y(d[1])); ctx.stroke();
+  });
+  ctx.lineWidth = 1.5;
   (a.opp[i] || []).filter(on).forEach(p => {
     ctx.beginPath(); ctx.arc(X(p[0]), Y(p[1]), 5, 0, Math.PI*2);
     ctx.strokeStyle = oppC; ctx.stroke();
@@ -594,7 +671,8 @@ function mountAnim(key){
   const lg = el("div", "legend");
   lg.innerHTML = '<span><i style="background:var(--duke)"></i>Duke</span>' +
     '<span><i style="border:1.5px solid var(--opp)"></i>Opponent</span>' +
-    '<span><i style="background:var(--ball)"></i>Ball</span>';
+    '<span><i style="background:var(--ball)"></i>Ball</span>' +
+    '<span><i class="line"></i>Matchup</span>';
   box.appendChild(lg);
 
   let F = null, i = 0, raf = null, last = 0;
@@ -638,7 +716,8 @@ function renderClusters(){
   q.innerHTML = "k = <b>" + DATA.k + "</b> · silhouette " + fmt(DATA.silhouette, 3) +
     " · stability ARI " + fmt(DATA.stability_ari, 3) + " · " + DATA.n_fit + " fit, " +
     DATA.n_assigned_only + " assigned-only" +
-    (DATA.small_corpus ? " · <b>small corpus</b>: treat the split as provisional" : "");
+    (DATA.small_corpus
+      ? " · <b>fewer than 400 fit possessions</b>: clusters are provisional" : "");
   root.appendChild(q);
 
   DATA.clusters.forEach(c => {
@@ -865,20 +944,40 @@ function updateProgress(){
 
 /* ---------------------------------------------------------------- results tab */
 
+/* The Results tables answer "what did the sets we discovered do?", so they roll up only the
+   possessions that actually shaped the taxonomy: training games (test/ncaa are held out for
+   validation) and, by default, only fit members -- assigned-only rows were snapped to the
+   nearest centroid without influencing it, so counting them inflates every set with its
+   nearest neighbours' possessions. The checkbox lets the reader see them anyway. */
+let resultsIncludeAssigned = false;
+
 function renderResults(){
   const root = document.getElementById("pane-results");
   root.innerHTML = "";
   root.appendChild(el("p", "lede",
-    "Every clustered possession rolled up by the name you gave its cluster. Points per " +
+    "Training-game possessions rolled up by the name you gave their cluster. Points per " +
     "possession come from the play-by-play. Cells under 8 possessions are greyed: that is " +
     "noise, not a finding."));
 
+  const chk = el("label", "chk");
+  const cb = document.createElement("input");
+  cb.type = "checkbox";
+  cb.checked = resultsIncludeAssigned;
+  cb.addEventListener("change", () => { resultsIncludeAssigned = cb.checked; renderResults(); });
+  chk.appendChild(cb);
+  chk.appendChild(document.createTextNode("Include assigned-only possessions"));
+  root.appendChild(chk);
+
   const rows = {};
   const unnamed = [];
+  let counted = 0;
   Object.keys(DATA.assign).forEach(key => {
+    if (!DATA.meta[key]) return;                 // assigned but not carried into the page
+    const m = metaOf(key);
+    if (m.split !== "train") return;
+    if (!resultsIncludeAssigned && DATA.assign[key].assigned_only) return;
     const name = resolveName(DATA.assign[key].cluster);
     if (!name) return;
-    const m = metaOf(key);
     const r = rows[name] || (rows[name] = {bucket:{}, def:{}, n:0, pts:0});
     const b = m.bucket || "unknown", d = (DATA.defense[key] || {}).defense || "unknown";
     const pts = m.points || 0;
@@ -887,6 +986,7 @@ function renderResults(){
     (r.def[d] || (r.def[d] = {n:0, pts:0}));
     r.def[d].n++; r.def[d].pts += pts;
     r.n++; r.pts += pts;
+    counted++;
   });
   DATA.clusters.forEach(c => {
     const v = S.clusters[String(c.cluster)];
@@ -902,6 +1002,9 @@ function renderResults(){
     root.appendChild(sectionTable("By defence", [["man","Man"],["zone","Zone"],
       ["unknown","Unknown"]], names, rows, "def"));
   }
+  root.appendChild(el("p", "lede", "Training games only" +
+    (resultsIncludeAssigned ? ", fit and assigned-only" : ", fit members only") +
+    "; " + counted + " possessions."));
 
   const h = el("div", "card");
   h.appendChild(el("h2", null, "Clusters without a usable name"));
@@ -1120,6 +1223,7 @@ document.getElementById("go-export").addEventListener("click", () => show("expor
     DATA.validation.length + " in the validation sample" +
     (DATA.generated ? " · built " + DATA.generated : "");
   setStatus(countLabelled());
+  mountConflictBanner();
   const start = (location.hash || "").replace("#", "");
   show(RENDER[start] ? start : "clusters");
 })();
@@ -1132,13 +1236,14 @@ document.getElementById("go-export").addEventListener("click", () => show("expor
 # --------------------------------------------------------------------------- main
 
 
-def build(plays_dir: Path, out: Path, fps: float) -> tuple[str, list[dict], bool]:
+def build(plays_dir: Path, fps: float) -> tuple[str, list[dict], bool]:
     index = json.loads((plays_dir / "features_index.json").read_text())
     rows = index["rows"]
     clusters = json.loads((plays_dir / "clusters.json").read_text())
     defense = json.loads((plays_dir / "defense.json").read_text())
     lab = L.load(plays_dir / "labels.json")
-    records = load_records(plays_dir / "halfcourt.jsonl")
+    records = {k: r for k, r in load_records(plays_dir / "halfcourt.jsonl").items()
+               if in_scope(r)}
     opponents = opponent_names(sorted({r["game_id"] for r in rows}))
     dates = {g.espn_id: g.date for g in games.load_registry()}
 
@@ -1178,10 +1283,10 @@ def main(argv=None) -> int:
     ap.add_argument("--fps", default=FPS, type=float)
     args = ap.parse_args(argv)
 
-    html, sample, fallback = build(args.plays, args.out, args.fps)
+    html, sample, fallback = build(args.plays, args.fps)
     if len(html.encode()) > SIZE_LIMIT and args.fps > FALLBACK_FPS:
         print(f"{len(html) / 1e6:.1f} MB is over the budget; resampling at {FALLBACK_FPS} fps")
-        html, sample, fallback = build(args.plays, args.out, FALLBACK_FPS)
+        html, sample, fallback = build(args.plays, FALLBACK_FPS)
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(html)

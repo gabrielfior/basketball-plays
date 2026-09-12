@@ -35,6 +35,10 @@ def main() -> None:
     ap.add_argument("--clock-margin", type=float, default=1.0, help="seconds of slack on the clock window")
     ap.add_argument("--max-dt", type=float, default=15.0, help="how far to look for a trusted clock read")
     ap.add_argument("--period", type=int, default=1, help="ESPN period number to annotate against")
+    ap.add_argument("--t-lo", type=float, default=None,
+                    help="restrict annotation to possessions/reads overlapping [t-lo, t-hi] (video seconds)")
+    ap.add_argument("--t-hi", type=float, default=None,
+                    help="restrict annotation to possessions/reads overlapping [t-lo, t-hi] (video seconds)")
     args = ap.parse_args()
 
     possessions = read_possessions(args.trajectories)
@@ -50,20 +54,26 @@ def main() -> None:
     summary = pbp.fetch_summary(cache=Path(args.espn_cache))
     info = gameinfo.from_summary(summary)
     events = pbp.parse_events(summary["plays"], period=args.period, team_by_id=info.team_by_id)
-    reads = sb.clean_timeline(raw, valid_states=pbp.score_states(events))
+
+    span = args.t_lo is not None and args.t_hi is not None
+    raw_for_clean = [r for r in raw if args.t_lo <= r.t <= args.t_hi] if span else raw
+    targets = [p for p in possessions if p.start_time <= args.t_hi and p.end_time >= args.t_lo] if span \
+        else possessions
+
+    reads = sb.clean_timeline(raw_for_clean, valid_states=pbp.score_states(events))
     print(f"scoreboard: {len(reads)} reads, clock trusted on {sum(r.clock is not None for r in reads) / len(reads):.0%}, "
           f"score on {sum(r.away is not None for r in reads) / len(reads):.0%}; {len(events)} play-by-play events")
 
-    for pos in possessions:
+    for pos in targets:
         pos.clock_start = sb.value_at(reads, pos.start_time, "clock", args.max_dt)
         pos.clock_end = sb.value_at(reads, pos.end_time, "clock", args.max_dt)
     assigned = pbp.assign_events(
-        [(p.possession_id, p.clock_start, p.clock_end, p.offense_team) for p in possessions], events,
+        [(p.possession_id, p.clock_start, p.clock_end, p.offense_team) for p in targets], events,
         margin=args.clock_margin,
     )
 
     stats = Counter()
-    for pos in possessions:
+    for pos in targets:
         c0, c1 = pos.clock_start, pos.clock_end
         a0, h0 = sb.value_at(reads, pos.start_time, "away", args.max_dt), sb.value_at(reads, pos.start_time, "home", args.max_dt)
         a1, h1 = sb.value_at(reads, pos.end_time + 3, "away", args.max_dt), sb.value_at(reads, pos.end_time + 3, "home", args.max_dt)
@@ -88,12 +98,12 @@ def main() -> None:
 
     out = args.out or args.trajectories
     write_jsonl(out, possessions)
-    n = len(possessions)
+    n = len(targets)
     print(f"{n} possessions annotated -> {out}")
     print(f"  clock window resolved: {stats['with_clock']}/{n}")
     print("  outcomes: " + ", ".join(f"{k}={v}" for k, v in stats.most_common() if k not in ("with_clock", "agree", "disagree")))
     print(f"  ESPN points vs scoreboard delta: agree={stats['agree']} disagree={stats['disagree']}")
-    for pos in possessions[:12]:
+    for pos in targets[:12]:
         c = f"{pos.clock_start:.0f}->{pos.clock_end:.0f}" if pos.clock_start is not None and pos.clock_end is not None else "?"
         print(f"  #{pos.possession_id:3d} {pos.start_time:7.1f}-{pos.end_time:7.1f}s clock {c:>10s} {pos.offense_team or '?':9s} "
               f"{pos.outcome or '-':12s} pts={pos.points_scored} sb={pos.scoreboard_points} events={len(pos.events or [])}")

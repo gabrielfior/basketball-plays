@@ -58,6 +58,38 @@ def test_clean_timeline_with_play_by_play_states_rejects_systematic_misreads():
     ]
 
 
+def test_clean_timeline_relocks_after_a_stray_low_block():
+    # 19:44 counting down, then a 9-read stray "3.0" graphic, then 19:30 counting down for real.
+    clocks = [19 * 60 + 44 - i for i in range(10)]
+    clocks += [3.0] * 9
+    clocks += [19 * 60 + 30 - i for i in range(20)]
+    rows = [(c, 0, 0) for c in clocks]
+    out = sb.clean_timeline(reads(rows))
+    stray = out[10:19]
+    real = out[19:39]
+    assert all(r.clock is None for r in stray)  # drop is implausible and never confirmed
+    assert all(r.clock is not None for r in real)  # accepted: a small, neighbour-confirmed drop
+
+
+def test_clean_timeline_accepts_a_real_large_drop_after_a_replay():
+    # 19:44 counting down, a 30 s gap with no OCR reads, then 14:10 counting down for real.
+    clocks = (
+        [19 * 60 + 44 - i for i in range(5)] + [None] * 30 + [14 * 60 + 10 - i for i in range(10)]
+    )
+    rows = [(c, 0, 0) for c in clocks]
+    out = sb.clean_timeline(reads(rows))
+    replay = out[35:45]
+    assert all(r.clock is not None for r in replay)  # confirmed by the following reads
+    assert [r.clock for r in replay] == clocks[35:45]
+
+
+def test_clean_timeline_still_rejects_an_isolated_spike():
+    clocks = [9 * 60 + 9 - i for i in range(4)] + [19 * 60 + 5] + [9 * 60 + 4 - i for i in range(5)]
+    rows = [(c, 0, 0) for c in clocks]
+    out = sb.clean_timeline(reads(rows))
+    assert out[4].clock is None
+
+
 def test_clean_timeline_disambiguates_dropped_colon_by_context():
     rows = [(120, 5, 5), (119, 5, 5), (118, 5, 5)]
     rs = reads(rows)

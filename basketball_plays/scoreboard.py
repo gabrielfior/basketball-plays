@@ -192,6 +192,59 @@ def _consistent(values: list[int | None], i: int) -> bool:
     return (i > 0 and values[i - 1] == v) or (i + 1 < len(values) and values[i + 1] == v)
 
 
+RELOCK_K = 5
+RELOCK_TOL_S = 1.5
+MAX_DROP_SLACK_S = 120.0
+
+
+def _relock(
+    out: list[ScoreboardRead],
+    cands: list[list[tuple[float, str | None]]],
+    i: int,
+    last: float | None,
+    last_t: float | None,
+) -> tuple[float, str | None] | None:
+    """Try to re-lock the clock onto read `i`'s best (first) candidate.
+
+    Looks at the next RELOCK_K reads that have any candidate. Accepts the candidate if, for
+    each of them, the candidate closest to the expected value is within RELOCK_TOL_S of a
+    running clock (ticking down from ours) or, unless our candidate is an implausible drop, a
+    stopped clock (frozen at ours). Returns the accepted (value, text) pair, or None.
+
+    An increase over `last` is never re-locked: the clock never legitimately increases within a
+    period, and a period boundary (e.g. half time) is handled by cleaning each period on its
+    own, not by this look-ahead.
+    """
+    c, text = cands[i][0]
+    if last is not None and c > last + 0.5:
+        return None
+    is_drop = (
+        last is not None
+        and last_t is not None
+        and c < last - ((out[i].t - last_t) + MAX_DROP_SLACK_S)
+    )
+    lookahead = []
+    for j in range(i + 1, len(out)):
+        if cands[j]:
+            lookahead.append(j)
+            if len(lookahead) == RELOCK_K:
+                break
+    if len(lookahead) < RELOCK_K:
+        return None
+
+    def confirmed(running: bool) -> bool:
+        for j in lookahead:
+            dt = out[j].t - out[i].t
+            expected = c - dt if running else c
+            if min(abs(cc - expected) for cc, _ in cands[j]) > RELOCK_TOL_S:
+                return False
+        return True
+
+    if confirmed(running=True) or (not is_drop and confirmed(running=False)):
+        return (c, text)
+    return None
+
+
 def clean_timeline(
     reads: list[ScoreboardRead], valid_states: list[tuple[int, int]] | None = None
 ) -> list[ScoreboardRead]:
@@ -202,6 +255,14 @@ def clean_timeline(
     a read is only accepted if the pair is one of those states and does not move backwards in
     that sequence, which catches systematic misreads such as 21 -> 27. The clock must be
     confirmed by a neighbour within 2 s and never increase.
+
+    When no candidate at a read passes that monotonic test, `_relock` tries to re-lock onto the
+    read's best candidate by checking the next RELOCK_K reads against it (see `_relock`). A
+    candidate that drops more than the elapsed time plus MAX_DROP_SLACK_S below the last
+    accepted clock (a stray graphic, or a replay of a much later moment) is never accepted by
+    the ordinary rule, only through that re-lock look-ahead, and then only via the running-clock
+    hypothesis: a value that stays frozen far below where the clock should be is a graphic, not
+    a genuine stoppage.
     """
     out = [ScoreboardRead(r.t, r.clock, r.clock_text, r.away, r.home) for r in reads]
     if valid_states is not None:
@@ -236,7 +297,7 @@ def clean_timeline(
         clock_candidates(r.clock_text) if r.clock_text else ([(r.clock, None)] if r.clock is not None else [])
         for r in out
     ]
-    last = None
+    last, last_t = None, None
     for i, r in enumerate(out):
         chosen = None
         # the reading closest to the last accepted clock wins (1 s apart, the clock barely moves)
@@ -244,13 +305,19 @@ def clean_timeline(
         for c, text in ordered:
             if last is not None and c > last + 0.5:
                 continue
+            if last is not None and last_t is not None:
+                slack = (r.t - last_t) + MAX_DROP_SLACK_S
+                if c < last - slack:
+                    continue  # implausible drop; only `_relock` can accept it
             neighbours = [cc for j in (i - 1, i + 1) if 0 <= j < len(out) for cc, _ in cands[j]]
             if any(abs(n - c) <= 2.0 for n in neighbours):
                 chosen = (c, text)
                 break
+        if chosen is None and cands[i]:
+            chosen = _relock(out, cands, i, last, last_t)
         if chosen:
             r.clock, r.clock_text = chosen
-            last = chosen[0]
+            last, last_t = chosen[0], r.t
         else:
             r.clock, r.clock_text = None, None
     return out

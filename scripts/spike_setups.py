@@ -33,15 +33,6 @@ def pct(n: int, total: int) -> str:
     return f"{n}/{total} ({n / total:.0%})" if total else f"{n}/0 (n/a)"
 
 
-def record_tracks(r: H.HalfcourtRecord) -> list[H.Track]:
-    """The record's stored (already canonical, already clipped) player tracks."""
-    return [
-        H.Track(p["track_id"], p["name"], p["jersey"],
-                {round(row[0], 3): (row[1], row[2]) for row in p["trajectory"]}, set())
-        for p in r.players
-    ]
-
-
 def sensitivity_table(halfcourt: list[H.HalfcourtRecord]) -> list[str]:
     """Setup rate over the half-court records for a grid of stillness thresholds.
 
@@ -56,7 +47,7 @@ def sensitivity_table(halfcourt: list[H.HalfcourtRecord]) -> list[str]:
         for min_players in SENSITIVITY_MIN_PLAYERS:
             hits = 0
             for r in halfcourt:
-                tracks = record_tracks(r)
+                tracks = H.tracks_from_record(r)
                 handler = {round(t, 3): (x, y) for t, x, y in r.ball_handler}
                 _, no_setup = H.find_setup(
                     tracks, handler, r.start_type, r.t_start, r.t0, r.t_end,

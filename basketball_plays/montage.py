@@ -35,29 +35,20 @@ MERGE_FT = 1.0
 
 
 def labelled_positions_at(rec: HalfcourtRecord, t: float) -> list[tuple[str, float, float]]:
-    """(label, x, y) per *merged* player position at `t`.
+    """(label, x, y) per merged, capped player position at `t`.
 
-    Raw tracks are merged the same way `halfcourt.positions_at` merges them, so the number of
-    discs drawn matches the record's `n_visible_at_setup`; each merged position takes the label
-    of the first raw track within `MERGE_FT` of it (jersey, else the track id mod 1000).
+    Positions come from `halfcourt.positions_at` on the record's tracks, so the discs drawn
+    match `n_visible_at_setup`; each takes the label of the nearest track within `MERGE_FT`
+    (jersey, else the track id mod 1000).
     """
-    raw: list[tuple[str, float, float]] = []
-    for p in rec.players:
-        best = None
-        for row in p["trajectory"]:
-            if (abs(row[0] - t) < 0.051 and np.isfinite(row[1]) and np.isfinite(row[2])
-                    and (best is None or abs(row[0] - t) < abs(best[0] - t))):
-                best = row
-        if best is not None:
-            label = p.get("jersey") or str(p["track_id"] % 1000)
-            raw.append((label, float(best[1]), float(best[2])))
+    tracks = H.tracks_from_record(rec)
     key = round(t, 3)
-    tracks = [H.Track(i, None, None, {key: (x, y)}, set())
-              for i, (_, x, y) in enumerate(raw)]
     out = []
-    for x, y in H.positions_at(tracks, t, MERGE_FT):
-        label = next((lbl for lbl, rx, ry in raw
-                      if np.hypot(x - rx, y - ry) < MERGE_FT), "?")
+    for x, y in H.positions_at(tracks, key):
+        near = [tr for tr in tracks if key in tr.xy
+                and np.hypot(x - tr.xy[key][0], y - tr.xy[key][1]) < MERGE_FT]
+        near.sort(key=lambda tr: np.hypot(x - tr.xy[key][0], y - tr.xy[key][1]))
+        label = (near[0].jersey or str(near[0].track_id % 1000)) if near else "?"
         out.append((label, x, y))
     return out
 

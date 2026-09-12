@@ -480,3 +480,41 @@ def test_default_stillness_threshold_is_one_and_a_half_feet():
         tracks.append(H.Track(i, None, None, {r[0]: (r[1], r[2]) for r in rows}, set()))
     assert H.still_players(tracks, 100.9) == (5, 5)
     assert H.still_players(tracks, 100.9, max_move_ft=1.0) == (5, 0)
+
+
+def test_positions_at_caps_at_five_keeping_detected_identified_long_tracks():
+    key = 100.0
+    mk = lambda i, name, det, n, x: H.Track(i, name, None, {key: (x, 25.0)}, set(),
+                                           detected={key} if det else set(), length=n)
+    tracks = [mk(1, "A", True, 50, 10.0), mk(2, "B", True, 50, 15.0), mk(3, "C", True, 50, 20.0),
+              mk(4, None, True, 40, 25.0), mk(5, "D", False, 50, 30.0),   # D interpolated
+              mk(6, None, True, 5, 35.0), mk(7, None, False, 3, 40.0)]    # anonymous extras
+    kept = H.positions_at(tracks, key)
+    assert len(kept) == 5
+    xs = sorted(x for x, _ in kept)
+    # detection beats identity: the anonymous detected tracks 4 and 6 stay, the interpolated
+    # named D and the interpolated anonymous 7 are dropped
+    assert xs == [10.0, 15.0, 20.0, 25.0, 35.0]
+    assert H.merged_count(tracks, key) == 7
+    assert len(H.positions_at(tracks, key, cap=None)) == 7
+
+
+def test_positions_at_keeps_the_better_ranked_member_of_a_duplicate_pair():
+    key = 100.0
+    good = H.Track(1, "A", None, {key: (10.0, 25.0)}, set(), detected={key}, length=50)
+    ghost = H.Track(2, None, None, {key: (10.5, 25.0)}, set(), detected=set(), length=4)
+    assert H.positions_at([ghost, good], key) == [(10.0, 25.0)]
+
+
+def test_tracks_from_record_roundtrips_detected_and_length():
+    rec = H.HalfcourtRecord(
+        game_id="g", index=0, team="Duke", start_type="dead", terminal="shot", free_throws=False,
+        clock_start=1000, clock_end=990, t_start=1.0, t_end=5.0, t0=1.0, setup=1.0,
+        no_setup=False, transition=False, located=True, outcome=None, points=0,
+        n_visible_at_setup=1,
+        players=[{"track_id": 9, "name": "A", "jersey": "12", "trajectory": [[1.0, 2.0, 3.0]],
+                  "detected": [1.0], "length": 7}],
+    )
+    tr = H.tracks_from_record(rec)[0]
+    assert (tr.track_id, tr.name, tr.jersey, tr.detected, tr.length) == (9, "A", "12", {1.0}, 7)
+    assert tr.xy == {1.0: (2.0, 3.0)}

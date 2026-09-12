@@ -285,6 +285,7 @@ def clock_to_video(reads, clock: float, mode: str,
 MIN_STILL_PLAYERS = 4
 STILL_FT = 1.5  # a player is still when it moved less than this over 0.5 s (jitter floor ~0.6 ft)
 MERGE_FT = 1.0  # two track ids within this distance at one instant are the same player
+MAX_PLAYERS = 5  # a team never has more than five players on the floor
 ARC_FT = 22.0
 TRANSITION_S = 6.0
 DEAD_SEARCH = (-3.0, 1.5)
@@ -299,6 +300,8 @@ class Track:
     jersey: str | None
     xy: dict[float, tuple[float, float]]  # rounded video time -> canonical court position
     holding: set[float]
+    detected: set[float] = field(default_factory=set)  # times with a real detection box
+    length: int = 0  # frames in the source track (longer tracks are more trustworthy)
 
 
 def attack_direction(possessions: list[Possession], team: str) -> str:
@@ -342,6 +345,8 @@ def gather_tracks(possessions: list[Possession], team: str, t_start: float,
                 track_id=p.track_id, name=p.name, jersey=p.jersey,
                 xy={round(r[0], 3): (float(x), float(y)) for r, (x, y) in zip(rows, xy)},
                 holding={round(h, 3) for h in p.holding if t_start <= h <= t_end},
+                detected={round(b[0], 3) for b in p.boxes if t_start <= b[0] <= t_end},
+                length=len(p.trajectory),
             ))
     return out
 
@@ -359,21 +364,48 @@ def _times(tracks: list[Track]) -> list[float]:
     return sorted({t for tr in tracks for t in tr.xy})
 
 
-def positions_at(tracks: list[Track], t: float,
-                  max_move_ft: float = MERGE_FT) -> list[tuple[float, float]]:
-    """Every track's position at rounded time `t`, id-agnostic: a second track id sitting
-    within `max_move_ft` of an already-kept position (the same player, fragmented into two
-    track ids) is treated as a duplicate and dropped rather than counted twice."""
+def _rank(tr: Track, t: float) -> tuple:
+    """Sort key: detected at t before interpolated, identified before anonymous, longer track
+    before shorter. Used to decide which positions survive merging and the five-player cap."""
+    return (t not in tr.detected, tr.name is None, -tr.length)
+
+
+def positions_at(tracks: list[Track], t: float, max_move_ft: float = MERGE_FT,
+                 cap: int | None = MAX_PLAYERS) -> list[tuple[float, float]]:
+    """Player positions at rounded time `t`, id-agnostic and at most `cap` of them.
+
+    Tracks are ranked (see `_rank`); a lower-ranked track within `max_move_ft` of a kept
+    position is the same player fragmented into two ids and is dropped. Anything beyond `cap`
+    is dropped next: a team never has more than five players on the floor, and the surplus is
+    an anonymous short track (usually an opponent mis-assigned to this team) or a position
+    interpolated across a tracking gap while a new id covered the same player.
+    """
     t = round(t, 3)
     out: list[tuple[float, float]] = []
-    for tr in tracks:
-        p = tr.xy.get(t)
-        if p is None:
-            continue
+    for tr in sorted((tr for tr in tracks if t in tr.xy), key=lambda tr: _rank(tr, t)):
+        p = tr.xy[t]
         if any(np.hypot(p[0] - q[0], p[1] - q[1]) < max_move_ft for q in out):
             continue
         out.append(p)
+        if cap is not None and len(out) >= cap:
+            break
     return out
+
+
+def merged_count(tracks: list[Track], t: float) -> int:
+    """Merged positions at `t` before the five-player cap; more than five means duplicate or
+    mis-assigned tracks."""
+    return len(positions_at(tracks, t, cap=None))
+
+
+def tracks_from_record(rec: "HalfcourtRecord") -> list[Track]:
+    """Rebuild canonical, clipped tracks from a record's stored players."""
+    return [
+        Track(p["track_id"], p.get("name"), p.get("jersey"),
+              {round(row[0], 3): (row[1], row[2]) for row in p["trajectory"]}, set(),
+              detected={round(x, 3) for x in p.get("detected", [])}, length=p.get("length", 0))
+        for p in rec.players
+    ]
 
 
 def find_t0(tracks: list[Track], handler: dict[float, tuple[float, float]], t_start: float,
@@ -577,16 +609,18 @@ def build_records(game_id: str, team: str, events: list[Event], reads,
                                       full_court=iv.full_court)
         transition = iv.start_type == LIVE and (t_end - t0) < TRANSITION_S
         visible, _ = still_players(tracks, setup)
+        raw_count = merged_count(tracks, setup)
         out.append(HalfcourtRecord(
             game_id=game_id, index=index, team=team, start_type=iv.start_type,
             full_court=iv.full_court, terminal=iv.terminal,
             free_throws=iv.free_throws, clock_start=iv.start_clock, clock_end=iv.end_clock,
             t_start=t_start, t_end=t_end, t0=t0, setup=setup, no_setup=no_setup,
             transition=transition, located=True, outcome=outcome, points=points,
-            n_visible_at_setup=visible, suspect_duplicates=visible > 5,
+            n_visible_at_setup=visible, suspect_duplicates=raw_count > MAX_PLAYERS,
             players=[{"track_id": tr.track_id, "name": tr.name, "jersey": tr.jersey,
                       "trajectory": [[t, round(x, 2), round(y, 2)]
-                                     for t, (x, y) in sorted(tr.xy.items())]}
+                                     for t, (x, y) in sorted(tr.xy.items())],
+                      "detected": sorted(tr.detected), "length": tr.length}
                      for tr in tracks],
             ball_handler=[[t, round(x, 2), round(y, 2)] for t, (x, y) in handler.items()],
             events=[e.to_dict() for e in iv.events],

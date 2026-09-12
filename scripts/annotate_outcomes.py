@@ -17,9 +17,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from basketball_plays import gameinfo
 from basketball_plays import playbyplay as pbp
 from basketball_plays import scoreboard as sb
-from basketball_plays.rosters import ROSTERS
 from basketball_plays.schema import read_possessions, write_jsonl
 
 
@@ -34,6 +34,7 @@ def main() -> None:
     ap.add_argument("--every", type=float, default=1.0, help="seconds between scoreboard reads")
     ap.add_argument("--clock-margin", type=float, default=1.0, help="seconds of slack on the clock window")
     ap.add_argument("--max-dt", type=float, default=15.0, help="how far to look for a trusted clock read")
+    ap.add_argument("--period", type=int, default=1, help="ESPN period number to annotate against")
     args = ap.parse_args()
 
     possessions = read_possessions(args.trajectories)
@@ -47,7 +48,8 @@ def main() -> None:
         sb.write_timeline(args.raw_ocr, raw)
 
     summary = pbp.fetch_summary(cache=Path(args.espn_cache))
-    events = pbp.parse_events(summary["plays"], period=1)
+    info = gameinfo.from_summary(summary)
+    events = pbp.parse_events(summary["plays"], period=args.period, team_by_id=info.team_by_id)
     reads = sb.clean_timeline(raw, valid_states=pbp.score_states(events))
     print(f"scoreboard: {len(reads)} reads, clock trusted on {sum(r.clock is not None for r in reads) / len(reads):.0%}, "
           f"score on {sum(r.away is not None for r in reads) / len(reads):.0%}; {len(events)} play-by-play events")
@@ -65,8 +67,8 @@ def main() -> None:
         c0, c1 = pos.clock_start, pos.clock_end
         a0, h0 = sb.value_at(reads, pos.start_time, "away", args.max_dt), sb.value_at(reads, pos.start_time, "home", args.max_dt)
         a1, h1 = sb.value_at(reads, pos.end_time + 3, "away", args.max_dt), sb.value_at(reads, pos.end_time + 3, "home", args.max_dt)
-        pos.score_before = {sb.AWAY_TEAM: a0, sb.HOME_TEAM: h0} if a0 is not None and h0 is not None else None
-        pos.score_after = {sb.AWAY_TEAM: a1, sb.HOME_TEAM: h1} if a1 is not None and h1 is not None else None
+        pos.score_before = {info.away: a0, info.home: h0} if a0 is not None and h0 is not None else None
+        pos.score_after = {info.away: a1, info.home: h1} if a1 is not None and h1 is not None else None
         if pos.score_before and pos.score_after and pos.offense_team in pos.score_before:
             pos.scoreboard_points = pos.score_after[pos.offense_team] - pos.score_before[pos.offense_team]
         if c0 is not None and c1 is not None:
@@ -76,7 +78,7 @@ def main() -> None:
             for e, t in zip(window, times):
                 d = e.to_dict()
                 d["t"] = t
-                d["player_team"], d["player"] = pbp.match_player(e.text, ROSTERS)
+                d["player_team"], d["player"] = pbp.match_player(e.text, info.rosters)
                 pos.events.append(d)
             pos.outcome, pos.points_scored = pbp.derive_outcome(window, pos.offense_team)
             stats["with_clock"] += 1

@@ -9,7 +9,7 @@ import numpy as np
 
 from basketball_plays import geometry, identity, paths, possessions
 from basketball_plays.court import NCAA
-from basketball_plays.rosters import ROSTERS, player_name
+from basketball_plays.rosters import DUKE, MICHIGAN, ROSTERS
 from basketball_plays.schema import (
     CLS_PLAYER_IN_POSSESSION,
     PLAYER_CLASSES,
@@ -110,7 +110,8 @@ def attach_holding(players: list[PlayerTrack], frames: list[FrameRecord]) -> Non
 
 def resolve_team_names(
     projected: list[ProjectedFrame], frames: list[FrameRecord], cluster_brightness: dict[int, float],
-    team_map: dict[int, str] | None = None,
+    team_map: dict[int, str] | None = None, home_team: str = DUKE, away_team: str = MICHIGAN,
+    rosters: dict | None = None,
 ) -> dict[int, str]:
     if team_map is not None:
         return team_map
@@ -121,7 +122,8 @@ def resolve_team_names(
         c = clusters.get(tid)
         if c in by_cluster:
             by_cluster[c].extend(rs)
-    return identity.name_clusters(cluster_brightness, by_cluster)
+    return identity.name_clusters(cluster_brightness, by_cluster, home_team, away_team,
+                                  rosters=rosters)
 
 
 def build_possessions(
@@ -137,6 +139,9 @@ def build_possessions(
     min_track_seconds: float = 1.5,
     stitch_gap_s: float = 2.5,
     stitch_dist_ft: float = 6.0,
+    rosters: dict | None = None,
+    home_team: str = DUKE,
+    away_team: str = MICHIGAN,
 ) -> list[Possession]:
     frames = sorted(frames, key=lambda f: f.t)
     projected = [project_frame(f) for f in frames]
@@ -145,7 +150,8 @@ def build_possessions(
                                    min_flip_duration=min_flip_duration, max_gap=max_gap,
                                    merge_same_half_gap=merge_same_half_gap)
     offense_map = possessions.learn_offense_map(offense_votes(projected, states))
-    names = resolve_team_names(projected, frames, cluster_brightness or {}, team_map)
+    names = resolve_team_names(projected, frames, cluster_brightness or {}, team_map,
+                               home_team=home_team, away_team=away_team, rosters=rosters)
     clusters = track_clusters(projected)
     reads = track_reads(frames)
 
@@ -185,7 +191,8 @@ def build_possessions(
             a, b = tr.frames[0], tr.frames[-1]
             team = names.get(tr.cluster) if tr.cluster is not None else None
             member_reads = [r for m in tr.members for r in reads.get(m, [])]
-            jersey, votes = identity.jersey_votes(member_reads, ROSTERS.get(team, {})) if team else (None, 0)
+            jersey, votes = identity.jersey_votes(
+                member_reads, (rosters or ROSTERS).get(team, {})) if team else (None, 0)
             candidates.append({"id": tr.track_id, "team": team, "jersey": jersey, "votes": votes,
                                "start": float(times[a]), "end": float(times[b])})
             players.append(PlayerTrack(
@@ -199,7 +206,7 @@ def build_possessions(
         resolved = identity.resolve_conflicts(candidates)
         for pl in players:
             pl.jersey = resolved.get(pl.track_id)
-            pl.name = player_name(pl.team, pl.jersey) if pl.team else None
+            pl.name = (rosters or ROSTERS).get(pl.team, {}).get(pl.jersey) if pl.team else None
         attach_holding(players, [frames[i] for i in idx])
 
         ball_out: list[list[float]] = []

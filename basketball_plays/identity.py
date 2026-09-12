@@ -44,16 +44,18 @@ def name_clusters(
     home_team: str = DUKE,
     away_team: str = MICHIGAN,
     min_roster_margin: int = 3,
+    rosters: dict[str, dict[str, str]] | None = None,
 ) -> dict[int, str]:
     """Decide which appearance cluster is which team.
 
     Roster agreement of OCR reads decides when it is clear-cut (margin >= min_roster_margin);
     otherwise the brighter cluster is the home team, which wears white in NCAA games.
     """
+    rosters = ROSTERS if rosters is None else rosters
     reads0 = cluster_reads.get(0, [])
     reads1 = cluster_reads.get(1, [])
-    option_a = _roster_agreement(reads0, ROSTERS[home_team]) + _roster_agreement(reads1, ROSTERS[away_team])
-    option_b = _roster_agreement(reads0, ROSTERS[away_team]) + _roster_agreement(reads1, ROSTERS[home_team])
+    option_a = _roster_agreement(reads0, rosters[home_team]) + _roster_agreement(reads1, rosters[away_team])
+    option_b = _roster_agreement(reads0, rosters[away_team]) + _roster_agreement(reads1, rosters[home_team])
     if abs(option_a - option_b) >= min_roster_margin:
         home_is_0 = option_a > option_b
     else:

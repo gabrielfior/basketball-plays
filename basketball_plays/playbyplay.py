@@ -54,7 +54,14 @@ def fetch_summary(game_id: str = GAME_ID, cache: Path | None = None) -> dict:
     return data
 
 
-def parse_events(plays: list[dict], period: int = 1) -> list[Event]:
+def period_length(period: int) -> float:
+    """Regulation halves are 20 minutes; every overtime period is 5."""
+    return 1200.0 if period <= 2 else 300.0
+
+
+def parse_events(plays: list[dict], period: int = 1,
+                 team_by_id: dict[str, str] | None = None) -> list[Event]:
+    team_by_id = TEAM_BY_ID if team_by_id is None else team_by_id
     out = []
     for p in plays:
         if p.get("period", {}).get("number") != period:
@@ -64,7 +71,8 @@ def parse_events(plays: list[dict], period: int = 1) -> list[Event]:
         if clock is None:
             continue
         out.append(Event(
-            clock_text=clock_text, clock=clock, team=TEAM_BY_ID.get(str(p.get("team", {}).get("id"))),
+            clock_text=clock_text, clock=clock,
+            team=team_by_id.get(str(p.get("team", {}).get("id"))),
             type=p.get("type", {}).get("text", ""), text=p.get("text", ""),
             scoring=bool(p.get("scoringPlay")), score_value=int(p.get("scoreValue") or 0),
             away_score=int(p.get("awayScore") or 0), home_score=int(p.get("homeScore") or 0),

@@ -231,10 +231,18 @@ def step_halfcourt(game, paths, dry, allow_mismatch=False):
     coverage = {"game": game.espn_id, "layout": game.layout, **period_fields, "periods": []}
     trust: list[tuple[int, float, float]] = []
     opponent = info.away if info.home == "Duke" else info.home
-    for span in spans:
-        events = pbp.parse_events(summary["plays"], period=span.period, team_by_id=info.team_by_id)
-        reads = sb.clean_timeline([r for r in reads_raw if span.t_lo - 5 <= r.t <= span.t_hi + 5],
-                                  valid_states=pbp.score_states(events))
+    events_by_period = {
+        span.period: pbp.parse_events(summary["plays"], period=span.period,
+                                      team_by_id=info.team_by_id)
+        for span in spans
+    }
+    valid_states_by_period = [pbp.score_states(events_by_period[span.period]) for span in spans]
+    spans_lohi = [(span.t_lo, span.t_hi) for span in spans]
+    period_trust = per_period_trust(reads_raw, spans_lohi, valid_states_by_period)
+    for span, valid_states, (clock_rate, score_rate) in zip(spans, valid_states_by_period,
+                                                            period_trust):
+        events = events_by_period[span.period]
+        reads = clean_period(reads_raw, span.t_lo, span.t_hi, valid_states)
         # span.period is an ESPN period number only because check_periods passed above.
         recs = H.build_records(game.espn_id, "Duke", events, reads, possessions,
                                period_length=pbp.period_length(span.period), period=span.period,
@@ -242,7 +250,6 @@ def step_halfcourt(game, paths, dry, allow_mismatch=False):
         records.extend(recs)
         dead = [r for r in recs if r.located and r.t0 is not None and not r.transition
                 and r.start_type in ("ato", "dead")]
-        clock_rate, score_rate = trust_rates(reads)
         trust.append((len(reads), clock_rate, score_rate))
         coverage["periods"].append({
             "period": span.period, "t_lo": span.t_lo, "t_hi": span.t_hi, "intervals": len(recs),
@@ -263,12 +270,33 @@ def step_halfcourt(game, paths, dry, allow_mismatch=False):
     print(json.dumps(coverage, indent=2))
 
 
+def clean_period(reads_raw, t_lo: float, t_hi: float, valid_states=None):
+    """Slice `reads_raw` down to one period's span, with the +-5 s buffer `step_halfcourt` uses
+    for clock drift at the edges, and clean only that slice.
+
+    `sb.clean_timeline` must be given one period's reads at a time (see its docstring): it now
+    re-locks across large jumps, including a genuine period boundary such as half time, so a
+    whole-game pass no longer fails loudly there -- it would quietly treat the second period's
+    clock as if it continued from the first.
+    """
+    return sb.clean_timeline([r for r in reads_raw if t_lo - 5 <= r.t <= t_hi + 5],
+                              valid_states=valid_states)
+
+
+def per_period_trust(reads_raw, spans, valid_states_by_period=None) -> list[tuple[float, float]]:
+    """`trust_rates` for each of `spans` (a list of `(t_lo, t_hi)` pairs), cleaning that period's
+    own buffered slice of `reads_raw` independently of every other period -- exactly what
+    `step_halfcourt` does per period, factored out so it's covered directly by a test rather than
+    a slicing formula duplicated in one."""
+    valid_states_by_period = valid_states_by_period or [None] * len(spans)
+    return [trust_rates(clean_period(reads_raw, t_lo, t_hi, valid_states))
+            for (t_lo, t_hi), valid_states in zip(spans, valid_states_by_period)]
+
+
 def trust_rates(reads) -> tuple[float, float]:
     """Fractions of already-cleaned `reads` whose clock, and whose score, survived cleaning.
 
-    Must be given one period's reads at a time: `sb.clean_timeline` enforces a non-increasing
-    clock, so cleaning a whole game in one pass rejects nearly every read after the clock resets
-    at half time (0.41 clock trust for the Michigan game, against 0.85/0.87 per period).
+    Must be given one period's reads at a time -- see `clean_period`'s docstring for why.
     """
     n = len(reads)
     if not n:

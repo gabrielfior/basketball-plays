@@ -90,6 +90,22 @@ def test_clean_timeline_still_rejects_an_isolated_spike():
     assert out[4].clock is None
 
 
+def test_clean_timeline_accepts_a_short_run_of_identical_misreads_as_a_stopped_clock():
+    # Known, tolerated limitation (see clean_timeline's docstring): 9:05 counting down, then a
+    # misread "8:00" repeated six times -- a drop of 65s, well within MAX_DROP_SLACK_S, so the
+    # ordinary rule's own neighbour check accepts it outright as a plausible stopped clock. The
+    # real clock resumes at 8:59 right after, which re-lock recovers immediately.
+    clocks = (
+        [9 * 60 + 5 - i for i in range(5)] + [8 * 60] * 6 + [8 * 60 + 59 - i for i in range(10)]
+    )
+    rows = [(c, 0, 0) for c in clocks]
+    out = sb.clean_timeline(reads(rows))
+    misread = out[5:11]
+    resumed = out[11:21]
+    assert [r.clock for r in misread] == [480.0] * 6  # accepted as a stopped clock -- the bug
+    assert [r.clock for r in resumed] == clocks[11:21]  # re-lock recovers the real reads at once
+
+
 def test_clean_timeline_disambiguates_dropped_colon_by_context():
     rows = [(120, 5, 5), (119, 5, 5), (118, 5, 5)]
     rs = reads(rows)

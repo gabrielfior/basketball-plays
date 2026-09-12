@@ -124,22 +124,31 @@ def test_trust_rates_are_the_fractions_of_reads_that_survived_cleaning():
     assert ingest.trust_rates([]) == (0.0, 0.0)
 
 
-def test_trust_rates_are_computed_per_period_by_cleaning_each_span_separately():
+def test_trust_rates_are_computed_per_period_by_cleaning_each_buffered_span_separately():
     # step_halfcourt never cleans the whole game in one pass: for each period it slices the raw
-    # timeline down to that period's span and cleans only that slice (sb.clean_timeline tracks a
-    # single running "last", so a period boundary such as half time must be a fresh start).
+    # timeline down to that period's own (t_lo, t_hi) span, with a +-5s buffer for clock drift at
+    # the edges, and cleans only that slice. half2 is a genuine half-time reset (the clock
+    # restarts at 1200s), so a naive whole-game clean would wrongly reject nearly all of it.
     half1 = [a_read(i, clock=1200.0 - i, away=0, home=0) for i in range(600)]
     half2 = [a_read(600 + i, clock=1200.0 - i, away=0, home=0) for i in range(600)]
     reads_raw = half1 + half2
     spans = [(0, 599), (600, 1199)]
 
-    per_period = [
-        ingest.trust_rates(sb.clean_timeline([r for r in reads_raw if lo <= r.t <= hi]))
+    trust = ingest.per_period_trust(reads_raw, spans)
+
+    # (a): the helper's numbers are exactly what cleaning each buffered slice independently
+    # gives -- built here from the same primitives (`sb.clean_timeline`, `ingest.trust_rates`)
+    # but not by calling `per_period_trust` itself, so a bug that cleaned the concatenated
+    # timeline once and sliced afterwards (rather than slicing first) would be caught.
+    expected = [
+        ingest.trust_rates(sb.clean_timeline([r for r in reads_raw if lo - 5 <= r.t <= hi + 5]))
         for lo, hi in spans
     ]
-    expected = [ingest.trust_rates(sb.clean_timeline(h)) for h in (half1, half2)]
+    assert trust == expected
 
-    assert per_period == expected == [(1.0, 1.0), (1.0, 1.0)]
+    # (b): a genuine reset never pollutes either period's own trust when cleaned per span --
+    # the property a whole-game pass could not guarantee.
+    assert all(clock_rate > 0.95 for clock_rate, _ in trust)
 
 
 def test_game_trust_rates_weight_each_period_by_its_read_count():

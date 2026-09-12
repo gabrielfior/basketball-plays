@@ -195,6 +195,19 @@ def _consistent(values: list[int | None], i: int) -> bool:
 RELOCK_K = 5
 RELOCK_TOL_S = 1.5
 MAX_DROP_SLACK_S = 120.0
+RELOCK_SCAN_MAX = 60
+
+
+def _drop_slack(t: float, last_t: float) -> float:
+    """How far below `last` a candidate at time `t` may drop and still be an ordinary reading,
+    given `last` was accepted at `last_t`: the elapsed time plus MAX_DROP_SLACK_S."""
+    return (t - last_t) + MAX_DROP_SLACK_S
+
+
+def _is_implausible_drop(c: float, t: float, last: float | None, last_t: float | None) -> bool:
+    """Whether candidate `c` at time `t` drops further below `last` than `_drop_slack` allows —
+    almost certainly a stray graphic or a replay of a much later moment, not a real clock drop."""
+    return last is not None and last_t is not None and c < last - _drop_slack(t, last_t)
 
 
 def _relock(
@@ -206,8 +219,10 @@ def _relock(
 ) -> tuple[float, str | None] | None:
     """Try to re-lock the clock onto read `i`'s best (first) candidate.
 
-    Looks at the next RELOCK_K reads that have any candidate. Accepts the candidate if, for
-    each of them, the candidate closest to the expected value is within RELOCK_TOL_S of a
+    Looks at the next RELOCK_K reads that have any candidate, scanning at most RELOCK_SCAN_MAX
+    reads ahead to find them (so the worst case, a long run of unreadable reads, is bounded
+    rather than scanning to the end of the timeline). Accepts the candidate if, for each of the
+    RELOCK_K reads found, the candidate closest to the expected value is within RELOCK_TOL_S of a
     running clock (ticking down from ours) or, unless our candidate is an implausible drop, a
     stopped clock (frozen at ours). Returns the accepted (value, text) pair, or None.
 
@@ -218,13 +233,9 @@ def _relock(
     time, from being re-locked onto as if it were a recovery.
     """
     c, text = cands[i][0]
-    is_drop = (
-        last is not None
-        and last_t is not None
-        and c < last - ((out[i].t - last_t) + MAX_DROP_SLACK_S)
-    )
+    is_drop = _is_implausible_drop(c, out[i].t, last, last_t)
     lookahead = []
-    for j in range(i + 1, len(out)):
+    for j in range(i + 1, min(i + 1 + RELOCK_SCAN_MAX, len(out))):
         if cands[j]:
             lookahead.append(j)
             if len(lookahead) == RELOCK_K:
@@ -256,18 +267,26 @@ def clean_timeline(
     that sequence, which catches systematic misreads such as 21 -> 27. The clock must be
     confirmed by a neighbour within 2 s and never increase.
 
-    When no candidate at a read passes that monotonic test (a drop or an increase over `last`),
-    `_relock` tries to re-lock onto the read's best candidate by checking the next RELOCK_K reads
-    against it (see `_relock`) — this is how the cleaner recovers once `last` has been thrown off
-    by a bad read, whichever direction it was thrown. A candidate that drops more than the
-    elapsed time plus MAX_DROP_SLACK_S below the last accepted clock (a stray graphic, or a
-    replay of a much later moment) is never accepted by the ordinary rule, only through that
-    re-lock look-ahead, and then only via the running-clock hypothesis: a value that stays frozen
-    far below where the clock should be is a graphic, not a genuine stoppage.
+    Re-lock (`_relock`) runs whenever the ordinary rule above accepts nothing at a read — a
+    candidate that violates the monotonic drop/increase check, or one that never violates it but
+    simply lacks neighbour confirmation. It tries to re-lock onto the read's best candidate by
+    checking the next RELOCK_K reads against it (see `_relock`); this is how the cleaner recovers
+    once `last` has been thrown off by a bad read, whichever direction it was thrown. A candidate
+    that drops more than the elapsed time plus MAX_DROP_SLACK_S below the last accepted clock (a
+    stray graphic, or a replay of a much later moment) is never accepted by the ordinary rule,
+    only through that re-lock look-ahead, and then only via the running-clock hypothesis: a value
+    that stays frozen far below where the clock should be is a graphic, not a genuine stoppage.
 
     Must be called once per period: this only tracks one running "last" value, and treats a
     period boundary such as half time — a real, large jump in the clock — the same as any other
     candidate to re-lock onto.
+
+    Known limitation: a short run of identical misreads within MAX_DROP_SLACK_S of `last` (so
+    the drop guard never flags it) is accepted outright by the ordinary rule's neighbour check,
+    as a plausible stopped clock — see
+    `test_clean_timeline_accepts_a_short_run_of_identical_misreads_as_a_stopped_clock` for an
+    example. This is tolerated rather than fixed: such a run is rare, and because re-lock now
+    also handles increases, the real reads that follow it re-lock and recovery is immediate.
     """
     out = [ScoreboardRead(r.t, r.clock, r.clock_text, r.away, r.home) for r in reads]
     if valid_states is not None:
@@ -310,10 +329,8 @@ def clean_timeline(
         for c, text in ordered:
             if last is not None and c > last + 0.5:
                 continue
-            if last is not None and last_t is not None:
-                slack = (r.t - last_t) + MAX_DROP_SLACK_S
-                if c < last - slack:
-                    continue  # implausible drop; only `_relock` can accept it
+            if _is_implausible_drop(c, r.t, last, last_t):
+                continue  # implausible drop; only `_relock` can accept it
             neighbours = [cc for j in (i - 1, i + 1) if 0 <= j < len(out) for cc, _ in cands[j]]
             if any(abs(n - c) <= 2.0 for n in neighbours):
                 chosen = (c, text)

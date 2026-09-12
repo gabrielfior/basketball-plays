@@ -80,6 +80,8 @@ def main() -> None:
     ap.add_argument("--raw-ocr", default="data/scoreboard_raw.jsonl")
     ap.add_argument("--out", default="data/plays/spike")
     ap.add_argument("--cols", type=int, default=6)
+    ap.add_argument("--start-types", default="ato,dead,live",
+                    help="comma-separated start types to keep (default all)")
     ap.add_argument("--sensitivity", action="store_true",
                     help="append a setup-rate table over stillness thresholds")
     args = ap.parse_args()
@@ -96,7 +98,8 @@ def main() -> None:
         f.writelines(r.to_json() + "\n" for r in records)
 
     located = [r for r in records if r.located and r.t0 is not None]
-    halfcourt = [r for r in located if not r.transition]
+    keep = set(args.start_types.split(","))
+    halfcourt = [r for r in located if not r.transition and r.start_type in keep]
     with_setup = [r for r in halfcourt if not r.no_setup]
     order = {"ato": 0, "dead": 1, "live": 2, "period": 3}
     tiles = [
@@ -118,7 +121,7 @@ def main() -> None:
         "| Metric | Value |", "|---|---|",
         f"| ESPN intervals for {args.team} | {len(records)} |",
         f"| Located in video (clock mapped, t0 found) | {pct(len(located), len(records))} |",
-        f"| Transition (excluded) | {pct(len(located) - len(halfcourt), len(located))} |",
+        f"| Excluded (transition or start type not kept) | {pct(len(located) - len(halfcourt), len(located))} |",
         f"| Half-court records | {pct(len(halfcourt), len(located))} |",
         f"| Full-court starts | {pct(sum(1 for r in halfcourt if r.full_court), len(halfcourt))} |",
         f"| Start types | {dict(Counter(r.start_type for r in halfcourt))} |",

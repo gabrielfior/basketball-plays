@@ -239,12 +239,46 @@ def _clock_rank(text: str | None) -> tuple[int, int]:
     among equally shaped reads the one with more digits wins (the more complete reading, same
     tie-break `ocr_digits` uses for whole-crop OCR). None loses to any plausible read; higher
     tuples win.
+
+    Deliberately separate from `ocr_digits`' own best-of-modes selection rather than shared with
+    it: that one ranks *raw* OCR strings for any crop (a clock or a one-/two-/three-digit score)
+    against each other, using digit count, cross-mode agreement and text length. This one ranks
+    already-`parse_clock`d clock text specifically, by clock shape first, and is used to compare
+    whole competing *reads* (which include the scores from that read's own region set), not raw
+    OCR strings from one crop. Folding the two together would make either a clock ranking that
+    scores over score crops it was never meant to judge, or a mode-selection rule that has to
+    special-case "is this text a clock" -- so they stay two rules, each simple for its own job.
     """
     if text is None:
         return (-1, -1)
     digits = len(re.sub(r"\D", "", text))
     shape = 1 if re.fullmatch(r"\d{1,2}:\d{2}", text) else 0
     return (shape, digits)
+
+
+def _pick_clock_index(texts: list[str | None]) -> int:
+    """Which of `texts` (the primary read's clock text at index 0, then each alternative's, in
+    the order `read_frame` read them) should be trusted, for `compete` mode.
+
+    The primary wins outright, without ranking, when its own text is already a full `m:ss`
+    reading: otherwise a spurious longer reading from an alternative region (for instance a
+    stray digit merged in from a neighbouring graphic) could outrank a legitimate, shorter
+    single-digit-minute clock such as "7:04" under `_clock_rank`'s digit-count tie-break, which
+    exists only to prefer the more complete reading among reads of the *same* shape, not to let a
+    longer alternative overrule a correct primary. When the primary is not a full `m:ss` (None, a
+    sub-minute tenths reading, or a clipped reading such as "19:0"), every text is ranked by
+    `_clock_rank` and the best wins; ties keep the earliest (the primary, or else the
+    earliest-listed alternative).
+    """
+    primary = texts[0] if texts else None
+    if primary and re.fullmatch(r"\d{1,2}:\d{2}", primary):
+        return 0
+    best_i, best_rank = 0, _clock_rank(primary)
+    for i, text in enumerate(texts[1:], start=1):
+        rank = _clock_rank(text)
+        if rank > best_rank:
+            best_i, best_rank = i, rank
+    return best_i
 
 
 def _read_regions(frame: np.ndarray, t: float, regions: dict, invert: bool) -> ScoreboardRead:
@@ -271,19 +305,25 @@ def read_frame(frame: np.ndarray, t: float, regions: dict | None = None,
     alternates between two scoreboard graphics) and the first whose clock parses is kept, with
     the scores read from that same alternative's regions.
 
-    When `compete` is True, `regions` AND every entry in `alternatives` are read unconditionally
-    (each alternative merged over `regions`, so it may override only some keys) and the read
-    whose clock text ranks best under `_clock_rank` is kept, scores included, from that read's
-    region set. Ties keep `regions`' own read (or the earliest-listed alternative among
-    themselves). For a broadcast whose clock shifts position depending on another element's
-    visibility, so neither a single region nor a fallback order can be trusted.
+    When `compete` is True and `regions`' own read is already a full `m:ss` clock, it wins
+    outright and `alternatives` are not even read (see `_pick_clock_index`): a spurious longer
+    reading from an alternative region must not be able to outrank a legitimate, shorter
+    single-digit-minute clock. Otherwise every entry in `alternatives` is read too (each merged
+    over `regions`, so it may override only some keys) and the read whose clock text ranks best
+    under `_pick_clock_index` / `_clock_rank` is kept, scores included, from that read's region
+    set. Ties keep `regions`' own read (or the earliest-listed alternative among themselves). For
+    a broadcast whose clock shifts position depending on another element's visibility, so neither
+    a single region nor a fallback order can be trusted.
     """
     regions = REGIONS if regions is None else regions
     if compete:
-        reads = [_read_regions(frame, t, regions, invert)]
+        primary = _read_regions(frame, t, regions, invert)
+        if primary.clock_text and re.fullmatch(r"\d{1,2}:\d{2}", primary.clock_text):
+            return primary
+        reads = [primary]
         for alt in alternatives:
             reads.append(_read_regions(frame, t, {**regions, **alt}, invert))
-        return max(reads, key=lambda r: _clock_rank(r.clock_text))
+        return reads[_pick_clock_index([r.clock_text for r in reads])]
     result = _read_regions(frame, t, regions, invert)
     if result.clock is not None:
         return result

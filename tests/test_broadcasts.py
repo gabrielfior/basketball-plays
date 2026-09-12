@@ -60,6 +60,23 @@ def test_clock_rank_orders_colon_reads_over_tenths_over_none():
     assert sb._clock_rank("19:09") > sb._clock_rank("19.0") > sb._clock_rank(None)
 
 
+@pytest.mark.parametrize("texts,winner", [
+    # A full m:ss primary wins outright, even against a longer-looking alternative: a spurious
+    # extra digit merged into the alternative crop must not outrank a correct, shorter
+    # single-digit-minute clock.
+    (["7:04", "10:43"], 0),
+    # The shifted-state clip ("19:0" -> tenths-shaped "19.0") is not a full m:ss, so the
+    # alternative's clean "19:09" competes and wins.
+    (["19.0", "19:09"], 1),
+    # Same shape (tenths), more digits wins.
+    (["4.5", "45.3"], 1),
+    # No primary clock at all: the alternative wins by default.
+    ([None, "12:31"], 1),
+])
+def test_pick_clock_index_guards_a_full_primary_then_ranks(texts, winner):
+    assert sb._pick_clock_index(texts) == winner
+
+
 def test_read_frame_returns_none_clock_when_no_alternative_parses():
     """A blank frame: neither the ncaa layout's primary regions nor its alternative parse."""
     frame = np.zeros((720, 1280, 3), dtype=np.uint8)

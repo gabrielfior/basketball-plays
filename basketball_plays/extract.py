@@ -92,6 +92,35 @@ def track_reads(frames: list[FrameRecord]) -> dict[int, list[str]]:
     return reads
 
 
+def enforce_team_cap(players: list[PlayerTrack], max_players: int = 5,
+                     surplus_fraction: float = 0.5) -> list[PlayerTrack]:
+    """A team has five players on the floor. Per frame and team, tracks beyond the fifth are
+    surplus, ranked anonymous-before-named then shorter-before-longer; a track that is surplus
+    in more than `surplus_fraction` of its frames loses its team (it is usually an opponent the
+    appearance clustering mis-assigned, or a ghost of another player). Named tracks stay."""
+    by_time: dict[tuple[str, float], list[PlayerTrack]] = defaultdict(list)
+    for p in players:
+        if p.team is None:
+            continue
+        for row in p.trajectory:
+            if np.isfinite(row[1]) and np.isfinite(row[2]):
+                by_time[(p.team, round(row[0], 3))].append(p)
+    surplus_frames: Counter = Counter()
+    for present in by_time.values():
+        if len(present) <= max_players:
+            continue
+        ranked = sorted(present, key=lambda p: (p.name is not None, len(p.trajectory)))
+        for p in ranked[: len(present) - max_players]:
+            surplus_frames[p.track_id] += 1
+    for p in players:
+        if p.name is not None or p.team is None:
+            continue
+        n_frames = sum(1 for row in p.trajectory if np.isfinite(row[1]))
+        if n_frames and surplus_frames[p.track_id] / n_frames > surplus_fraction:
+            p.team = None
+    return players
+
+
 def attach_holding(players: list[PlayerTrack], frames: list[FrameRecord]) -> None:
     """Fill PlayerTrack.holding with the times the detector flagged the track's box as
     player-in-possession. Boxes are matched on (time, rounded bbox) because stitching renames
@@ -207,6 +236,7 @@ def build_possessions(
         for pl in players:
             pl.jersey = resolved.get(pl.track_id)
             pl.name = (rosters or ROSTERS).get(pl.team, {}).get(pl.jersey) if pl.team else None
+        enforce_team_cap(players)
         attach_holding(players, [frames[i] for i in idx])
 
         ball_out: list[list[float]] = []

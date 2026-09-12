@@ -1,6 +1,7 @@
 import numpy as np
 
 from basketball_plays import plays as P
+from basketball_plays.features import FeatureRow
 
 
 def blobs(n_per=30, seed=0):
@@ -35,3 +36,25 @@ def test_small_corpus_caps_k():
     X, _ = blobs(n_per=20)     # 60 rows
     m = P.fit_clusters(X, k_range=range(8, 31), n_components=5)
     assert m.small_corpus and m.k <= 6
+
+
+def test_summarize_reports_n_fit_from_mask():
+    X, _y = blobs()
+    m = P.fit_clusters(X, k_range=range(2, 7), n_components=5)
+    rows = [
+        FeatureRow(game_id="g", period=1, index=i, bucket="ato", split="train",
+                   no_setup=False, vector=X[i], handler=np.zeros(5, dtype=int))
+        for i in range(len(X))
+    ]
+
+    fit_mask = np.arange(len(X)) % 3 != 0  # two thirds of rows count as "fit"
+    summary = P.summarize(m, rows, m.labels_train, ["z"] * 22, fit_mask=fit_mask)
+    assert summary  # sanity: some clusters were found
+    for c in summary:
+        expected = int(np.sum(fit_mask[m.labels_train == c["cluster"]]))
+        assert c["n_fit"] == expected
+        assert c["n_fit"] <= c["n"]
+
+    # fit_mask=None (the default) means every row is treated as fit.
+    summary_all = P.summarize(m, rows, m.labels_train, ["z"] * 22)
+    assert all(c["n_fit"] == c["n"] for c in summary_all)

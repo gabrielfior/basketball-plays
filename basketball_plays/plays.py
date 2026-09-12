@@ -63,7 +63,15 @@ def assign(model: ClusterModel, X: np.ndarray) -> np.ndarray:
 
 
 def summarize(model: ClusterModel, rows, labels: np.ndarray, zone_names: list[str],
-              n_bins: int = 5) -> list[dict]:
+              n_bins: int = 5, fit_mask: np.ndarray | None = None) -> list[dict]:
+    """Per-cluster summary. `fit_mask` marks which `rows` shaped the centroids (all of them when
+    `None`); `n` stays the total membership while `n_fit` counts only the fit ones, and `members`
+    (used to pick montage tiles) lists fit members only, nearest first.
+    """
+    if fit_mask is None:
+        fit_mask = np.ones(len(rows), dtype=bool)
+    else:
+        fit_mask = np.asarray(fit_mask, dtype=bool)
     Z = _project(model.scaler, model.pca, np.stack([r.vector for r in rows]))
     out = []
     for c in range(model.k):
@@ -72,15 +80,16 @@ def summarize(model: ClusterModel, rows, labels: np.ndarray, zone_names: list[st
             continue
         occ = np.mean([rows[i].vector[: n_bins * len(zone_names)] for i in idx], axis=0)
         occ = occ.reshape(n_bins, len(zone_names))
-        dists = np.linalg.norm(Z[idx] - model.kmeans.cluster_centers_[c], axis=1)
-        order = idx[np.argsort(dists)]
+        idx_fit = idx[fit_mask[idx]]
+        dists = np.linalg.norm(Z[idx_fit] - model.kmeans.cluster_centers_[c], axis=1)
+        order = idx_fit[np.argsort(dists)]
         top = [zone_names[j] for j in np.argsort(-occ[1])[:5]]
         path = []
         for b in range(n_bins):
             hs = [int(rows[i].handler[b]) for i in idx if rows[i].handler[b] >= 0]
             path.append(zone_names[int(np.bincount(hs).argmax())] if hs else "-")
         out.append({
-            "cluster": int(c), "n": len(idx),
+            "cluster": int(c), "n": len(idx), "n_fit": len(idx_fit),
             "n_by_bucket": {b: int(sum(1 for i in idx if rows[i].bucket == b))
                             for b in ("ato", "inbound", "after_score")},
             "n_by_split": {s: int(sum(1 for i in idx if rows[i].split == s))

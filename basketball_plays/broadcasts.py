@@ -43,11 +43,12 @@ LAYOUTS: dict[str, Layout] = {
     # narrow blue panel. The boxes were first measured on a first-half frame, where both scores
     # are single digits; on full-game frames the tens digit of a two-digit score fell outside
     # them, so away and home were widened (and trimmed vertically, off the bar's edges) against
-    # cw_wake_1500/2500/3500.jpg. The crops now hold both digits on all four fixtures, but
-    # tesseract still drops a digit on two of them (see tests/test_broadcasts.py).
+    # cw_wake_1500/2500/3500.jpg. All four fixtures now read correctly — two of them only via
+    # scoreboard.ocr_digits' glyph-at-a-time fallback, because this bar's condensed italic digits
+    # defeat whole-crop OCR at every page-segmentation mode.
     "cw": Layout("cw", {"away": (545, 652, 615, 694), "clock": (975, 652, 1045, 695),
                         "home": (878, 652, 950, 694)},
-                 note="The CW bottom bar (fixtures cw_wake.jpg, cw_wake_1500.jpg)"),
+                 note="The CW bottom bar (fixtures cw_wake.jpg, cw_wake_1500/2500/3500.jpg)"),
     # CBS Sports Network: same family as CBS but shifted, with the clock in a light grey panel
     # left of the shot clock. The NHL ticker below the bar stays out of every box.
     "cbssn": Layout("cbssn", {"away": (492, 613, 556, 661), "clock": (1038, 618, 1116, 659),

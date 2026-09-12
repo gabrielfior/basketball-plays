@@ -81,11 +81,18 @@ def _run_modes(img: np.ndarray, modes: tuple[int, ...] = OCR_MODES) -> list[str]
 
 def _is_plausible(text: str) -> bool:
     """Whether an OCR string looks like something a scoreboard actually shows: a clock (m:ss, or
-    tenths under a minute), or a one- or two-digit score."""
+    tenths under a minute), a one- or two-digit score, or a clock whose colon tesseract dropped.
+
+    That last case has to be admitted so it can compete on digit count: "1204" and "1:04" are
+    both clock-shaped readings of 12:04, and the one with more digits is the one that did not
+    lose a character. Only a bare four digits qualify — "1400." keeps its trailing junk and stays
+    out, so it cannot outrank a clean "4:00"."""
     if re.fullmatch(r"\d{1,2}:\d{2}", text):
         return True
     if re.fullmatch(r"\d{1,2}\.\d", text):
         return float(text) < 60
+    if re.fullmatch(r"\d{4}", text):
+        return bool(clock_candidates(text))
     return bool(re.fullmatch(r"\d{1,2}", text))
 
 
@@ -165,7 +172,11 @@ def ocr_digits(crop: np.ndarray) -> str:
         # returning "": parse_score and clock_candidates can still salvage a dropped colon.
         pool = [(text, i) for text, i in ranked if _is_plausible(text)] or ranked
         counts = Counter(text for text, _ in pool)
-        best = min(pool, key=lambda ti: (-counts[ti[0]], -len(ti[0]), ti[1]))[0]
+        # Digit count leads: a reading that kept all its digits beats one that dropped a digit
+        # but kept a colon ("1204" over "1:04"). Only then does agreement across modes decide,
+        # then length, then the order in OCR_MODES.
+        best = min(pool, key=lambda ti: (-len(re.sub(r"\D", "", ti[0])), -counts[ti[0]],
+                                         -len(ti[0]), ti[1]))[0]
     # Whole-crop OCR saw fewer digits than the crop has glyphs, so tesseract's line segmentation
     # dropped one. Re-read a glyph at a time, which bypasses that segmentation. The glyph count
     # is bounded: a scoreboard box holds a score or a clock, so more than MAX_GLYPHS components

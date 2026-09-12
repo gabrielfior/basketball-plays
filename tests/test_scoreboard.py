@@ -1,3 +1,6 @@
+import cv2
+import numpy as np
+
 from basketball_plays import scoreboard as sb
 
 
@@ -154,3 +157,54 @@ def test_ocr_digits_keeps_an_implausible_reading_when_nothing_looks_like_a_score
     stub_modes(monkeypatch, ["", "1204", "1204", ""])
     assert sb.ocr_digits(None) == "1204"
     assert sb.parse_clock(sb.ocr_digits(None)) == (12 * 60 + 4, "12:04")
+
+
+def test_ocr_digits_prefers_more_digits_over_a_colon_when_both_are_clock_shaped(monkeypatch):
+    """A true 12:04 read as "1:04" by two modes and "1204" by two. "1:04" keeps the colon but
+    lost a digit; "1204" lost only the colon, which clock_candidates puts back."""
+    stub_modes(monkeypatch, ["1:04", "1:04", "1204", "1204"])
+    assert sb.ocr_digits(None) == "1204"
+    assert sb.parse_clock(sb.ocr_digits(None)) == (12 * 60 + 4, "12:04")
+
+
+def test_ocr_digits_keeps_a_clean_clock_over_four_digits_with_trailing_junk(monkeypatch):
+    """The digit-count preference must not let "1400." (really 4:00 plus noise) win: only a bare
+    four digits is treated as a clock that merely lost its colon."""
+    stub_modes(monkeypatch, ["4:00", "1400.", "1400.", "4:00"])
+    assert sb.ocr_digits(None) == "4:00"
+
+
+def digit_glyph(ch):
+    """A synthetic glyph. The fixture videos are pruned, so single-digit scores -- every score in
+    the opening minutes of a game -- have no frame fixture to crop; this stands in for one."""
+    img = np.full((70, 50), 255, np.uint8)
+    cv2.putText(img, ch, (6, 58), cv2.FONT_HERSHEY_SIMPLEX, 2.0, 0, 4)
+    return cv2.copyMakeBorder(img, 20, 20, 20, 20, cv2.BORDER_CONSTANT, value=255)
+
+
+def blob_glyph():
+    """A stray mark that is digit-shaped enough to clear _glyphs' aspect and height filters."""
+    img = np.full((70, 50), 255, np.uint8)
+    cv2.rectangle(img, (12, 12), (38, 58), 0, -1)
+    return cv2.copyMakeBorder(img, 20, 20, 20, 20, cv2.BORDER_CONSTANT, value=255)
+
+
+def test_ocr_digits_does_not_invent_a_second_digit_for_a_single_digit_score(monkeypatch):
+    """Every mode says "7" and the crop segments into two components, the second being a stray
+    blob rather than a digit. The fallback must not turn a real 7 into a two-digit score."""
+    monkeypatch.setattr(sb, "preprocess", lambda crop: crop)
+    monkeypatch.setattr(sb, "_run_modes", lambda img, modes=sb.OCR_MODES: ["7", "7", "7", "7"])
+    monkeypatch.setattr(sb, "_glyphs",
+                        lambda img, height=sb.OCR_TARGET_HEIGHT: [digit_glyph("7"), blob_glyph()])
+    assert sb.ocr_digits(None) == "7"
+    assert sb.parse_score(sb.ocr_digits(None)) == 7
+
+
+def test_glyph_fallback_still_recovers_a_dropped_tens_digit(monkeypatch):
+    """The counterpart: when the second component really is a digit, the fallback fires and
+    recovers the "5" that every whole-crop mode dropped from "51"."""
+    monkeypatch.setattr(sb, "preprocess", lambda crop: crop)
+    monkeypatch.setattr(sb, "_run_modes", lambda img, modes=sb.OCR_MODES: ["", "1", "1", ""])
+    glyphs = [digit_glyph("5"), digit_glyph("1")]
+    monkeypatch.setattr(sb, "_glyphs", lambda img, height=sb.OCR_TARGET_HEIGHT: glyphs)
+    assert sb.ocr_digits(None) == "51"

@@ -1,4 +1,10 @@
+import numpy as np
+
+from basketball_plays import court, extract
 from basketball_plays import possessions as P
+from basketball_plays.rosters import DUKE, MICHIGAN
+from basketball_plays.schema import CLS_PLAYER, CLS_PLAYER_IN_POSSESSION, Detection, FrameRecord
+from tests.test_extract import camera, to_pix
 
 
 def test_segment_offense_uses_its_own_half_time_mapping_not_the_whole_game_average():
@@ -110,3 +116,77 @@ def test_use_period_maps_is_false_for_none_and_empty_and_true_otherwise():
     assert P.use_period_maps(None) is False
     assert P.use_period_maps([]) is False
     assert P.use_period_maps([(0.0, 1200.0)]) is True
+
+
+def make_period_frames(right_holder: int, start_t: float, n_per_half: int = 60, fps: int = 10):
+    """One period's frames: `n_per_half` in the LEFT half, then `n_per_half` in the RIGHT half.
+
+    Ten players, tracks 1-5 in cluster 0 and 6-10 in cluster 1, on a real (fittable) court
+    homography. `right_holder` is the cluster carrying the ball while the action is in the RIGHT
+    half; the other cluster carries it in the LEFT half - i.e. one period's fixed basket
+    assignment. Times start at `start_t`, so two calls can be placed in different periods.
+    """
+    H = camera()
+    verts = court.NCAA.vertices_array()
+    kp = np.concatenate([to_pix(H, verts), np.ones((33, 1))], axis=1).tolist()
+    rng = np.random.default_rng(7)
+    frames = []
+    for k in range(2 * n_per_half):
+        half = -1 if k < n_per_half else 1
+        holder = (1 - right_holder) if half == -1 else right_holder
+        base_x = 20.0 if half == -1 else 74.0
+        dets = []
+        for tid in range(1, 11):
+            cluster = 0 if tid <= 5 else 1
+            x = base_x + rng.uniform(-8, 8)
+            y = 5 + 4.5 * tid + rng.uniform(-1, 1)
+            px, py = to_pix(H, [[x, y]])[0]
+            cls = CLS_PLAYER_IN_POSSESSION if (cluster == holder and tid % 5 == 1) else CLS_PLAYER
+            dets.append(Detection(track_id=tid, cls=cls, conf=0.9,
+                                  bbox=[px - 15, py - 70, px + 15, py], team_cluster=cluster))
+        t = start_t + k / fps
+        frames.append(FrameRecord(frame_idx=round(t * 60), t=round(t, 3), keypoints=kp,
+                                  detections=dets, ball=None, numbers=[]))
+    return frames
+
+
+def two_period_frames():
+    """Two periods with inverted basket assignments (teams swap baskets at half time)."""
+    return make_period_frames(right_holder=1, start_t=0.0) + \
+        make_period_frames(right_holder=0, start_t=2400.0)
+
+
+def test_build_possessions_inverts_offense_across_a_period_boundary_with_period_spans():
+    # Period 1 [0, 1200): cluster 1 attacks RIGHT. Period 2 [2400, 3600): cluster 0 does. With
+    # the period spans given, each possession's offense comes from its own period's map, so the
+    # team attacking a given basket must invert across the boundary.
+    frames = two_period_frames()
+    spans = [(0.0, 1200.0), (2400.0, 3600.0)]
+
+    possessions = extract.build_possessions(frames, fps=10, cluster_brightness={},
+                                            period_spans=spans)
+
+    by_period = {}
+    for p in possessions:
+        by_period.setdefault(0 if p.start_time < 1200 else 1, []).append(p)
+    assert len(by_period[0]) == 2 and len(by_period[1]) == 2
+    right_1 = next(p for p in by_period[0] if p.attacking_basket == "right")
+    right_2 = next(p for p in by_period[1] if p.attacking_basket == "right")
+    left_1 = next(p for p in by_period[0] if p.attacking_basket == "left")
+    left_2 = next(p for p in by_period[1] if p.attacking_basket == "left")
+    assert {right_1.offense_team, left_1.offense_team} == {DUKE, MICHIGAN}
+    assert right_1.offense_team == left_2.offense_team
+    assert right_2.offense_team == left_1.offense_team
+    assert right_1.offense_team != right_2.offense_team  # the inversion at half time
+
+
+def test_empty_period_spans_behaves_exactly_like_no_period_spans():
+    # `use_period_maps([])` is False, so an OCR timeline that yielded no spans must fall back to
+    # the per-segment rule rather than blanking (or guessing) every offense label.
+    frames = two_period_frames()
+
+    empty = extract.build_possessions(frames, fps=10, cluster_brightness={}, period_spans=[])
+    none = extract.build_possessions(frames, fps=10, cluster_brightness={}, period_spans=None)
+
+    assert [p.offense_team for p in empty] == [p.offense_team for p in none]
+    assert all(p.offense_team is not None for p in empty)

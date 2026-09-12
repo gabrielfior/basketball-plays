@@ -11,6 +11,10 @@ classifier once, then processes 5-minute chunks in parallel. `--end` defaults to
 duration (via ffprobe), so the whole video is processed unless `--end` is given. Prints an
 estimated cost before doing anything remote and refuses to proceed above `--max-cost`. Writes
 <out-dir>/frames_XX.jsonl and <out-dir>/meta.json locally (default data/games/<game>/raw).
+
+Chunks resume: a chunk whose frames_XX.jsonl already exists on the volume returns immediately, so
+after a failed run the documented retry is the same command with `--skip-upload --skip-fit` (pass
+`--force-chunks` to redo chunks that did finish).
 """
 
 from __future__ import annotations
@@ -144,7 +148,8 @@ def fit_teams(game: str, start_s: float, end_s: float, n_samples: int = 160) -> 
 
 @app.function(gpu="L4", secrets=secrets, volumes={VOL_PATH: vol}, timeout=3600)
 def process_chunk(
-    game: str, chunk_id: int, start_s: float, end_s: float, fps: float, ocr_every: int = 10
+    game: str, chunk_id: int, start_s: float, end_s: float, fps: float, ocr_every: int = 10,
+    force: bool = False,
 ) -> str:
     import numpy as np
     import supervision as sv
@@ -158,6 +163,13 @@ def process_chunk(
 
     paths = game_paths(game)
     path = paths["video"]
+    # Resume: a chunk that already ran left its output on the volume, so a retry of a run that
+    # died part-way only pays for the chunks that are actually missing.
+    out_path = f"{paths['raw']}/frames_{chunk_id:02d}.jsonl"
+    vol.reload()  # see what earlier runs committed, not this container's stale view
+    if not force and os.path.exists(out_path):
+        print(f"chunk {chunk_id}: already done, reusing {out_path}")
+        return out_path
     player_model = get_model(model_id=PLAYER_MODEL_ID)
     kp_model = get_model(model_id=KEYPOINT_MODEL_ID)
     ocr_model = get_model(model_id=OCR_MODEL_ID)
@@ -169,7 +181,6 @@ def process_chunk(
     prev_hist = None
     id_base = chunk_id * 1_000_000
 
-    out_path = f"{paths['raw']}/frames_{chunk_id:02d}.jsonl"
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
     n = 0
     with open(out_path, "w") as f:
@@ -266,14 +277,23 @@ def main(
     skip_upload: bool = False,
     skip_fit: bool = False,
     max_cost: float = 10.0,
+    # 0.09 is a deliberately conservative ceiling: the Michigan game (77.7 video minutes) actually
+    # billed $5.00, i.e. $0.064/min. Keep the estimate above the measured rate.
     cost_per_minute: float = 0.09,
+    force_chunks: bool = False,
 ):
     import subprocess
 
     if end < 0:
-        end = float(subprocess.check_output(
+        probed = subprocess.check_output(
             ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", video]
-        ).strip())
+        ).decode().strip()
+        try:
+            end = float(probed)
+        except ValueError:
+            raise SystemExit(
+                f"ffprobe could not read a duration from {video} (got {probed!r}); "
+                "the file is missing, truncated or not a video") from None
     minutes = (end - start) / 60
     est = minutes * cost_per_minute
     print(f"estimated cost: {minutes:.1f} video minutes x ${cost_per_minute:.2f} = ${est:.2f}")
@@ -303,10 +323,17 @@ def main(
     bounds = []
     s = start
     while s < end:
-        bounds.append((game, len(bounds), s, min(end, s + chunk), fps))
+        bounds.append((game, len(bounds), s, min(end, s + chunk), fps, 10, force_chunks))
         s += chunk
     print(f"processing {len(bounds)} chunks ...")
-    result_paths = list(process_chunk.starmap(bounds))
+    retry = (f"modal run modal_app.py --video {video} --game {game} --end {end:.0f} "
+             "--skip-upload --skip-fit")
+    try:
+        result_paths = list(process_chunk.starmap(bounds))
+    except BaseException:
+        print(f"chunk processing failed; finished chunks are kept on the volume, so retry with:"
+              f"\n    {retry}")
+        raise
 
     Path(out_dir).mkdir(parents=True, exist_ok=True)
     for p in result_paths:

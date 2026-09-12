@@ -49,6 +49,28 @@ def run_gpu_stage(video: str, game: str, start: float, end: float, fps: float, r
 DEFAULT_END = 2135.0  # legacy default (35:35), overridden to the whole video when --game is set
 
 
+def resolve_team_map(spec: str, home: str, away: str) -> dict[int, str] | None:
+    """Turn a `--team-map` spec like `"0=Duke"` into `{0: 'Duke', 1: <the other team>}`.
+
+    `auto` (the default) returns None, leaving the cluster-to-team decision to the appearance
+    and jersey evidence. The named team must be one of this game's two teams, so a typo or a
+    team from another game fails here instead of silently mislabelling every possession.
+    """
+    if spec == "auto":
+        return None
+    cluster_text, _, name = spec.partition("=")
+    cluster_text, name = cluster_text.strip(), name.strip()
+    if cluster_text not in ("0", "1") or not name:
+        sys.exit(f"--team-map must look like '0={home}' or '1={away}' (got {spec!r})")
+    match = next((t for t in (home, away) if t.lower() == name.lower()), None)
+    if match is None:
+        sys.exit(f"--team-map team {name!r} is not one of this game's teams "
+                 f"({home!r}, {away!r})")
+    cluster = int(cluster_text)
+    other = away if match == home else home
+    return {cluster: match, 1 - cluster: other}
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("video")
@@ -64,10 +86,15 @@ def main() -> None:
     ap.add_argument("--periods-from",
                     help="path to a scoreboard_raw.jsonl; learns one offense map per period "
                          "instead of guessing from a time window")
+    ap.add_argument("--allow-no-periods", action="store_true",
+                    help="with --periods-from, continue (falling back to the time-windowed "
+                         "offense rule) when no period spans could be detected")
     ap.add_argument("--skip-gpu", action="store_true", help="reuse raw detections in --raw-dir")
     ap.add_argument("--skip-upload", action="store_true", help="video already on the Modal volume")
-    ap.add_argument("--team-map", choices=["auto", "0=Duke", "0=Michigan"], default="auto",
-                    help="force which appearance cluster is Duke")
+    ap.add_argument("--team-map", default="auto",
+                    help="force a cluster's team, e.g. \"0=Duke\"; the team must be one of this "
+                         "game's two teams (from --rosters-from, else Duke/Michigan) and the "
+                         "other cluster gets the other team")
     ap.add_argument("--min-players", type=int, default=6)
     ap.add_argument("--min-duration", type=float, default=3.0)
     ap.add_argument("--max-gap", type=float, default=3.0, help="invalid-view gap that ends a possession")
@@ -95,19 +122,24 @@ def main() -> None:
         sys.exit(f"no frames_*.jsonl in {raw_dir}")
     meta = json.loads((raw_dir / "meta.json").read_text()) if (raw_dir / "meta.json").exists() else {}
     brightness = {int(k): float(v) for k, v in meta.get("cluster_brightness", {}).items()}
-    team_map = None
-    if args.team_map == "0=Duke":
-        team_map = {0: DUKE, 1: MICHIGAN}
-    elif args.team_map == "0=Michigan":
-        team_map = {0: MICHIGAN, 1: DUKE}
-
     info = None
     if args.rosters_from:
         info = gameinfo.from_summary(json.loads(Path(args.rosters_from).read_text()))
+    team_map = resolve_team_map(args.team_map, info.home if info else DUKE,
+                                info.away if info else MICHIGAN)
 
     period_spans = None
     if args.periods_from:
         spans = periods.period_spans(scoreboard.load_timeline(args.periods_from))
+        if not spans:
+            # An empty span list means the scoreboard timeline had no usable clock reads: the
+            # offense maps would silently fall back to the one-window rule for the whole game.
+            print(f"no period spans detected in {args.periods_from}: the scoreboard timeline has "
+                  "no usable clock reads (wrong layout, or OCR failed)")
+            if not args.allow_no_periods:
+                sys.exit("re-run the ocr step, or pass --allow-no-periods to fall back to the "
+                         "time-windowed offense rule")
+            print("falling back to the time-windowed offense rule (--allow-no-periods)")
         period_spans = [(s.t_lo, s.t_hi) for s in spans]
 
     fps = float(meta.get("fps", args.fps))

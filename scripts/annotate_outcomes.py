@@ -30,6 +30,12 @@ def main() -> None:
     ap.add_argument("--out", default=None, help="output path (default: overwrite the input)")
     ap.add_argument("--raw-ocr", default="data/scoreboard_raw.jsonl")
     ap.add_argument("--espn-cache", default="data/espn_summary.json")
+    ap.add_argument("--espn-id", default=pbp.GAME_ID,
+                    help="ESPN game id to fetch when --espn-cache is missing "
+                         f"(default {pbp.GAME_ID}, the legacy single game)")
+    ap.add_argument("--layout", default="espn",
+                    help="broadcaster scoreboard layout for OCR (see basketball_plays.broadcasts); "
+                         "ignored with --skip-ocr")
     ap.add_argument("--skip-ocr", action="store_true", help="reuse --raw-ocr instead of reading the video")
     ap.add_argument("--every", type=float, default=1.0, help="seconds between scoreboard reads")
     ap.add_argument("--clock-margin", type=float, default=1.0, help="seconds of slack on the clock window")
@@ -48,10 +54,11 @@ def main() -> None:
         raw = sb.load_timeline(args.raw_ocr)
     else:
         print(f"reading the scoreboard every {args.every}s from {start:.0f}s to {end:.0f}s ...")
-        raw = sb.read_timeline(args.video, start, end + 1, every_s=args.every)
+        raw = sb.read_timeline(args.video, start, end + 1, every_s=args.every,
+                               layout=args.layout)
         sb.write_timeline(args.raw_ocr, raw)
 
-    summary = pbp.fetch_summary(cache=Path(args.espn_cache))
+    summary = pbp.fetch_summary(args.espn_id, cache=Path(args.espn_cache))
     info = gameinfo.from_summary(summary)
     events = pbp.parse_events(summary["plays"], period=args.period, team_by_id=info.team_by_id)
 

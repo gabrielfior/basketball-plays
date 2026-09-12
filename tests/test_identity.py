@@ -1,3 +1,5 @@
+import pytest
+
 from basketball_plays import identity
 from basketball_plays.rosters import DUKE, MICHIGAN, ROSTERS
 
@@ -33,3 +35,11 @@ def test_name_clusters_roster_evidence_overrides_brightness():
     reads1 = ["12", "14", "6", "20"]  # Duke-only numbers
     m = identity.name_clusters({0: 220.0, 1: 90.0}, {0: reads0, 1: reads1})
     assert m == {0: MICHIGAN, 1: DUKE}
+
+
+def test_name_clusters_names_the_missing_roster_instead_of_raising_a_bare_keyerror():
+    rosters = {DUKE: {"12": "Someone"}}  # the away team's roster was never loaded
+    with pytest.raises(ValueError) as excinfo:
+        identity.name_clusters({0: 90.0, 1: 200.0}, {0: [], 1: []}, rosters=rosters)
+    assert "no roster for team" in str(excinfo.value)
+    assert MICHIGAN in str(excinfo.value) and DUKE in str(excinfo.value)

@@ -52,6 +52,9 @@ def name_clusters(
     otherwise the brighter cluster is the home team, which wears white in NCAA games.
     """
     rosters = ROSTERS if rosters is None else rosters
+    for name in (home_team, away_team):
+        if name not in rosters:
+            raise ValueError(f"no roster for team {name!r}; known: {list(rosters)}")
     reads0 = cluster_reads.get(0, [])
     reads1 = cluster_reads.get(1, [])
     option_a = _roster_agreement(reads0, rosters[home_team]) + _roster_agreement(reads1, rosters[away_team])

@@ -395,9 +395,9 @@ def _rank(tr: Track, t: float) -> tuple:
     return (t not in tr.detected, tr.name is None, -tr.length)
 
 
-def positions_at(tracks: list[Track], t: float, max_move_ft: float = MERGE_FT,
-                 cap: int | None = MAX_PLAYERS) -> list[tuple[float, float]]:
-    """Player positions at rounded time `t`, id-agnostic and at most `cap` of them.
+def _ranked_dedup(tracks: list[Track], t: float, max_move_ft: float,
+                  cap: int | None) -> list[tuple[Track, tuple[float, float]]]:
+    """Shared ranking/merge/cap logic behind `positions_at` and `id_positions_at`.
 
     Tracks are ranked (see `_rank`); a lower-ranked track within `max_move_ft` of a kept
     position is the same player fragmented into two ids and is dropped. Anything beyond `cap`
@@ -406,15 +406,34 @@ def positions_at(tracks: list[Track], t: float, max_move_ft: float = MERGE_FT,
     interpolated across a tracking gap while a new id covered the same player.
     """
     t = round(t, 3)
-    out: list[tuple[float, float]] = []
+    out: list[tuple[Track, tuple[float, float]]] = []
     for tr in sorted((tr for tr in tracks if t in tr.xy), key=lambda tr: _rank(tr, t)):
         p = tr.xy[t]
-        if any(np.hypot(p[0] - q[0], p[1] - q[1]) < max_move_ft for q in out):
+        if any(np.hypot(p[0] - q[0], p[1] - q[1]) < max_move_ft for _, q in out):
             continue
-        out.append(p)
+        out.append((tr, p))
         if cap is not None and len(out) >= cap:
             break
     return out
+
+
+def positions_at(tracks: list[Track], t: float, max_move_ft: float = MERGE_FT,
+                 cap: int | None = MAX_PLAYERS) -> list[tuple[float, float]]:
+    """Player positions at rounded time `t`, id-agnostic and at most `cap` of them. See
+    `_ranked_dedup` for the merge/cap rule."""
+    return [p for _, p in _ranked_dedup(tracks, t, max_move_ft, cap)]
+
+
+def id_positions_at(tracks: list[Track], t: float, max_move_ft: float = MERGE_FT,
+                    cap: int | None = MAX_PLAYERS) -> list[tuple[int, tuple[float, float]]]:
+    """Like `positions_at`, but keeps each kept position's `track_id`.
+
+    Use this instead of `positions_at` whenever a caller needs to follow the same player across
+    frames (e.g. matchup stability/follow features): `positions_at`'s own list order is a
+    per-call ranking, not a stable identity, and can reorder frame to frame on real tracking
+    (detection status and track length are per-frame/per-track, not fixed).
+    """
+    return [(tr.track_id, p) for tr, p in _ranked_dedup(tracks, t, max_move_ft, cap)]
 
 
 def merged_count(tracks: list[Track], t: float) -> int:

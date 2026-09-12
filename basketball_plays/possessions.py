@@ -166,3 +166,36 @@ def segment_offense(
     if len(nearby_votes) >= min_votes:
         return learn_offense_map(nearby_votes).get(seg.half)
     return global_map.get(seg.half) if global_map is not None else None
+
+
+def learn_offense_maps_by_span(
+    votes: list[tuple[float, int, int]], spans: list[tuple[float, float]]
+) -> list[dict[int, int]]:
+    """One `learn_offense_map` result per span, from the votes falling inside it.
+
+    Each vote is `(t, action_half, cluster)`. A span's map uses only the votes with
+    `t_lo <= t < t_hi`, so periods (which each have their own fixed basket assignment) are
+    learned independently instead of averaging over a whole game that may span several.
+    """
+    maps = []
+    for t_lo, t_hi in spans:
+        span_votes = [(half, cluster) for t, half, cluster in votes if t_lo <= t < t_hi]
+        maps.append(learn_offense_map(span_votes))
+    return maps
+
+
+def span_index(t: float, spans: list[tuple[float, float]], near_s: float = 30.0) -> int | None:
+    """Index of the span containing `t`.
+
+    When `t` falls in the gap between (or outside) the given spans, returns the nearest span by
+    boundary distance if that distance is at most `near_s`, else None.
+    """
+    for i, (lo, hi) in enumerate(spans):
+        if lo <= t < hi:
+            return i
+    best_i, best_d = None, None
+    for i, (lo, hi) in enumerate(spans):
+        d = min(abs(t - lo), abs(t - hi))
+        if best_d is None or d < best_d:
+            best_i, best_d = i, d
+    return best_i if best_d is not None and best_d <= near_s else None

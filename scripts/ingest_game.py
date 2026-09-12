@@ -4,10 +4,14 @@ Steps (each skipped when its output exists):
   download   yt-dlp 720p avc1 video -> data/games/<id>/video.mp4
   espn       ESPN summary -> espn_summary.json
   gpu        Modal Stage A -> raw/frames_XX.jsonl (prints a cost estimate first)
-  extract    Stage B -> trajectories.jsonl (rosters from the ESPN summary)
-  ocr        scoreboard timeline -> scoreboard_raw.jsonl (layout from games.json)
+  ocr        scoreboard timeline -> scoreboard_raw.jsonl (whole video; layout from games.json)
+  extract    Stage B -> trajectories.jsonl (rosters from the ESPN summary; offense learned per
+             period from the scoreboard timeline, not guessed from a time window)
   annotate   clock, score, outcome per possession, per period
   halfcourt  Duke half-court records per period -> halfcourt.jsonl, coverage.json
+
+OCR now runs before extract (it no longer needs possession times to pick its range - it reads
+the whole video) so extract can pass the scoreboard timeline's period spans straight in.
 
     uv run python scripts/ingest_game.py 401817238 --dry-run
     uv run python scripts/ingest_game.py 401817238
@@ -33,7 +37,7 @@ from basketball_plays import scoreboard as sb
 from basketball_plays.games import GamePaths, get_game
 from basketball_plays.schema import read_possessions, write_jsonl
 
-STEPS = ["download", "espn", "gpu", "extract", "ocr", "annotate", "halfcourt"]
+STEPS = ["download", "espn", "gpu", "ocr", "extract", "annotate", "halfcourt"]
 YTDLP_FORMAT = "bestvideo[height<=720][ext=mp4][vcodec^=avc1]+bestaudio[ext=m4a]"
 
 
@@ -65,16 +69,19 @@ def step_espn(game, paths, dry):
 def step_extract(game, paths, dry):
     run(["uv", "run", "python", "scripts/extract_trajectories.py", str(paths.video), "--skip-gpu",
          "--raw-dir", str(paths.raw_dir), "--out", str(paths.trajectories),
-         "--rosters-from", str(paths.espn_summary)], dry)
+         "--rosters-from", str(paths.espn_summary),
+         "--periods-from", str(paths.scoreboard_raw)], dry)
 
 
 def step_ocr(game, paths, dry):
     if dry:
         print(f"+ scoreboard OCR layout={game.layout} -> {paths.scoreboard_raw}")
         return
-    possessions = read_possessions(paths.trajectories)
-    start, end = possessions[0].start_time, possessions[-1].end_time
-    raw = sb.read_timeline(str(paths.video), start, end + 1, every_s=1.0, layout=game.layout)
+    probe = subprocess.run(
+        ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0",
+         str(paths.video)], capture_output=True, text=True, check=True)
+    duration = float(probe.stdout.strip())
+    raw = sb.read_timeline(str(paths.video), 0.0, duration + 1.0, every_s=1.0, layout=game.layout)
     sb.write_timeline(paths.scoreboard_raw, raw)
 
 

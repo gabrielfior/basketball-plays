@@ -66,3 +66,36 @@ def test_segment_with_no_votes_and_no_nearby_segments_uses_global_map_then_none(
     global_map = {P.LEFT: 0, P.RIGHT: 1}
     assert P.segment_offense(votes_by_frame, seg, states, [seg], global_map=global_map) == 1
     assert P.segment_offense(votes_by_frame, seg, states, [seg]) is None
+
+
+def test_learn_offense_maps_by_span_learns_each_span_independently():
+    # First period [0, 1200s): RIGHT attacked by cluster 1, LEFT by cluster 0. Second period
+    # [2400, 3600s): the teams have swapped baskets, so the mapping is the exact inverse.
+    votes = []
+    for t in range(20):
+        votes.append((float(t), P.RIGHT, 1))
+        votes.append((float(t), P.LEFT, 0))
+    for t in range(2400, 2420):
+        votes.append((float(t), P.RIGHT, 0))
+        votes.append((float(t), P.LEFT, 1))
+    spans = [(0.0, 1200.0), (2400.0, 3600.0)]
+
+    maps = P.learn_offense_maps_by_span(votes, spans)
+
+    assert maps[0] == {P.RIGHT: 1, P.LEFT: 0}
+    assert maps[1] == {P.RIGHT: 0, P.LEFT: 1}
+    assert maps[0] == {k: 1 - v for k, v in maps[1].items()}
+
+    # a segment's midpoint routes it to its own period's map, not the other period's.
+    idx_first_period = P.span_index(500.0, spans)
+    idx_second_period = P.span_index(3000.0, spans)
+    assert maps[idx_first_period].get(P.RIGHT) == 1
+    assert maps[idx_second_period].get(P.RIGHT) == 0
+
+
+def test_span_index_inside_near_and_far():
+    spans = [(0.0, 1200.0), (2400.0, 3600.0)]
+    assert P.span_index(600.0, spans) == 0  # inside the first span
+    assert P.span_index(1220.0, spans) == 0  # 20s past its end, within 30s -> nearest
+    assert P.span_index(2385.0, spans) == 1  # 15s before the second span's start -> nearest
+    assert P.span_index(5000.0, spans) is None  # far outside every span

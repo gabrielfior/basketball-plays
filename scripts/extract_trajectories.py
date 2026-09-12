@@ -28,7 +28,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from basketball_plays import gameinfo
+from basketball_plays import gameinfo, periods, scoreboard
 from basketball_plays.extract import build_possessions
 from basketball_plays.games import GamePaths
 from basketball_plays.rosters import DUKE, MICHIGAN
@@ -61,6 +61,9 @@ def main() -> None:
     ap.add_argument("--raw-dir", default=None)
     ap.add_argument("--out", default=None)
     ap.add_argument("--rosters-from", help="path to an espn_summary.json for rosters and home/away")
+    ap.add_argument("--periods-from",
+                    help="path to a scoreboard_raw.jsonl; learns one offense map per period "
+                         "instead of guessing from a time window")
     ap.add_argument("--skip-gpu", action="store_true", help="reuse raw detections in --raw-dir")
     ap.add_argument("--skip-upload", action="store_true", help="video already on the Modal volume")
     ap.add_argument("--team-map", choices=["auto", "0=Duke", "0=Michigan"], default="auto",
@@ -102,13 +105,19 @@ def main() -> None:
     if args.rosters_from:
         info = gameinfo.from_summary(json.loads(Path(args.rosters_from).read_text()))
 
+    period_spans = None
+    if args.periods_from:
+        spans = periods.period_spans(scoreboard.load_timeline(args.periods_from))
+        period_spans = [(s.t_lo, s.t_hi) for s in spans]
+
     fps = float(meta.get("fps", args.fps))
     possessions = build_possessions(frames, fps=fps, cluster_brightness=brightness, team_map=team_map,
                                     min_players=args.min_players, min_duration=args.min_duration,
                                     max_gap=args.max_gap, merge_same_half_gap=args.merge_gap,
                                     rosters=info.rosters if info else None,
                                     home_team=info.home if info else DUKE,
-                                    away_team=info.away if info else MICHIGAN)
+                                    away_team=info.away if info else MICHIGAN,
+                                    period_spans=period_spans)
     write_jsonl(out, possessions)
     total = sum(p.end_time - p.start_time for p in possessions)
     print(f"{len(frames)} frames -> {len(possessions)} possessions ({total:.0f}s of play) -> {out}")

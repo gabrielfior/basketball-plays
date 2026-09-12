@@ -161,10 +161,15 @@ def reassign_team_by_jersey(
     """Override a track's cluster-derived team when its jersey reads unambiguously favor the
     other roster. Appearance clustering merges the two uniforms poorly on some broadcasts
     (e.g. the Florida game), mislabeling named players and inflating the anonymous-surplus
-    count that enforce_team_cap then demotes. A number shared by both rosters can never tip
-    the vote for either side, since it counts toward both; only a team-exclusive number (or a
-    plurality of reads clearing MIN_TEAM_VOTES) can flip the assignment, and only when the
-    other team has zero matching votes."""
+    count that enforce_team_cap then demotes.
+
+    Flips only when one team has a jersey number read at least MIN_TEAM_VOTES times (that
+    team's plurality vote, i.e. its single most-repeated on-roster number via
+    identity.jersey_votes -- not the sum of all roster-matching reads) while the other team has
+    zero on-roster reads. A number shared by both rosters counts toward both sides and so can
+    never by itself make one side's count zero; two different numbers read once each is
+    likewise weaker than one number read twice, since a plurality vote of 1 never clears
+    MIN_TEAM_VOTES. Otherwise the cluster's team is kept."""
     home_votes = identity.jersey_votes(candidates_reads, rosters.get(home_team, {}))[1]
     away_votes = identity.jersey_votes(candidates_reads, rosters.get(away_team, {}))[1]
     if home_votes >= MIN_TEAM_VOTES and away_votes == 0:

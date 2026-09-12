@@ -57,3 +57,19 @@ def test_none_cluster_team_can_still_flip_to_unambiguous_team():
 def test_none_cluster_team_stays_none_when_ambiguous():
     team = extract.reassign_team_by_jersey(["12", "12"], None, SHARED_ROSTERS, DUKE, MICHIGAN)
     assert team is None
+
+
+def test_two_different_duke_only_numbers_each_once_does_not_flip():
+    # "3" and "12" are both Duke-only (Michigan has neither), but each is read only once. A
+    # team's vote is the count of its single most-repeated on-roster number (identity.jersey_votes'
+    # plurality), not the sum of all roster-matching reads -- two different numbers seen once
+    # each is weaker evidence than one number seen twice under OCR noise, so this stays below
+    # MIN_TEAM_VOTES and does not flip.
+    team = extract.reassign_team_by_jersey(["3", "12"], MICHIGAN, EXCLUSIVE_ROSTERS, DUKE, MICHIGAN)
+    assert team == MICHIGAN
+
+
+def test_same_duke_only_number_repeated_does_flip():
+    # Contrast with the case above: the same number repeated clears MIN_TEAM_VOTES and flips.
+    team = extract.reassign_team_by_jersey(["3", "3"], MICHIGAN, EXCLUSIVE_ROSTERS, DUKE, MICHIGAN)
+    assert team == DUKE

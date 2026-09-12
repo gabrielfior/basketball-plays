@@ -37,25 +37,35 @@ def test_zone_defence_scores_low_follow_and_low_spread():
     assert f is not None and f["spread"] < 0.5 and f["follow"] < 0.3
 
 
-def test_man_defence_stability_survives_defender_list_order_mismatch():
-    # Same man-coverage geometry as test_man_defence_scores_high_stability_and_follow (each
-    # defender i shadows attacker i throughout), but the defender dicts are listed in an order
-    # that does not match the attacker order or spatial proximity to the rim: defs[0] guards
-    # attacker 0 (far from the rim) while defs[1], the *second*-listed defender, guards attacker
-    # 2 (much nearer the rim). Both listed defenders have identical trajectory length, so
-    # `halfcourt._rank` ties between them and list order alone decides `positions_at`'s output
-    # order -- which no longer lines up with anything geometric. `defense.features` must still
-    # get stability right here because it identifies matchups by track_id, not by whichever slot
-    # positions_at happened to rank a defender into.
+def alternating_detected(tid, name, path):
+    """Like `moving`, but `detected` only holds the even-indexed frames' times: the trajectory
+    itself is complete (every frame has a real position), only the detection flag flickers."""
+    rows = [[round(100.0 + k / 10, 3), x, y] for k, (x, y) in enumerate(path)]
+    detected = [r[0] for k, r in enumerate(rows) if k % 2 == 0]
+    return {"track_id": tid, "name": name, "jersey": None, "trajectory": rows,
+            "detected": detected, "length": len(rows)}
+
+
+def test_man_defence_stability_survives_positions_at_index_churn():
+    # Same man-coverage geometry as test_man_defence_scores_high_stability_and_follow (defender i
+    # shadows attacker i throughout, 2 ft ahead in x), but defender D0's `detected` flag flickers
+    # every other frame while its trajectory (and every other track's) covers every frame.
+    # `halfcourt._rank` ranks "detected at t" before "not detected at t", so on frames where D0 is
+    # marked undetected, positions_at's tie-break demotes it behind every other (always-detected)
+    # defender -- the array index `positions_at` assigns to D0 alternates between frames even
+    # though D0 is, physically, the same track guarding the same attacker the whole time. An
+    # index-based matchup (treating `matchups`'s array positions as identity) would see the
+    # (attacker, defender)-index pair for attacker 0 flip every single frame and read that as
+    # total instability; `defense.features` must still score this as stable man coverage because
+    # it identifies matchups by track_id, not by whichever slot positions_at ranked a defender
+    # into on a given frame.
     n = 90
     offs = [moving(i, f"A{i}", [(10 + 0.5 * k, 8 * i + 5) for k in range(n)]) for i in range(5)]
-    defs_by_attacker = [
-        moving(10 + i, f"D{i}", [(12 + 0.5 * k, 8 * i + 5) for k in range(n)]) for i in range(5)
-    ]
-    order = [0, 2, 1, 3, 4]  # defs[1] (second listed) guards attacker 2, nearest the rim
-    defs = [defs_by_attacker[i] for i in order]
+    d0 = alternating_detected(10, "D0", [(12 + 0.5 * k, 5) for k in range(n)])
+    rest = [moving(10 + i, f"D{i}", [(12 + 0.5 * k, 8 * i + 5) for k in range(n)])
+            for i in range(1, 5)]
     r = rec(offs, setup=100.0, t_end=110.0)
-    r.opponents = defs
+    r.opponents = [d0] + rest
     f = D.features(r)
     assert f is not None and f["stability"] > 0.95
 

@@ -296,6 +296,13 @@ def test_clock_to_video_outside_the_timeline_is_none():
     assert H.clock_to_video(rs, 900, "last") is None
 
 
+def test_clock_to_video_interpolates_between_time_ordered_neighbours():
+    # a stray early read below the target clock (the tail of the previous period) must not be
+    # picked as the "below" bracket: the below-read must come after the latest above-read in time
+    rs = reads([(5, 0.0), (10, 50), (20, 40), (30, 30)])
+    assert H.clock_to_video(rs, 45, "first") == 15.0
+
+
 def traj(t_start, n, x, y, dx=0.0, dy=0.0, fps=10.0):
     """[t, x, y] rows moving by (dx, dy) ft per frame."""
     return [[round(t_start + k / fps, 3), x + k * dx, y + k * dy] for k in range(n)]
@@ -557,6 +564,52 @@ def test_build_records_located_without_a_track_reaching_the_frontcourt():
     assert r.players == [] and r.ball_handler == []
     assert r.outcome == "missed_3"
     assert r.n_visible_at_setup == 0
+
+
+def test_build_records_ignores_reads_outside_the_span():
+    # a turnover at 19:10 (clock 1150) gives Duke the ball dead; Duke scores at 19:00 (clock 1140)
+    events = [
+        ev("20:00", None, "Jumpball", "Start game"),
+        ev("19:59", M, "Jumpball", "Jump Ball won by Michigan"),
+        ev("19:10", M, "Lost Ball Turnover", "Someone bad pass\nturnover"),
+        ev("19:00", D, "JumpShot", "Someone makes 10-foot jumper"),
+    ]
+    assert [summary(i) for i in H.intervals(events) if i.team == D] == [
+        (D, 1150, 1140, "dead", "shot", False),
+    ]
+    # clock 0.0 at t=96..99 stands in for the previous period's final reads; a countdown from
+    # clock 1200 at t=100, one read per second, reaches clock 1000 at t=300
+    rs = reads([(96, 0.0), (97, 0.0), (98, 0.0), (99, 0.0)]
+               + [(100 + k, 1200 - k) for k in range(201)])
+    recs = H.build_records("test", D, events, rs, [], span=(100.0, 305.0))
+    assert len(recs) == 1
+    r = recs[0]
+    assert r.located
+    assert abs(r.t_start - 150.0) < 0.01
+    assert abs(r.t_end - 160.5) < 0.01
+
+
+def test_build_records_end_at_clock_zero_does_not_pick_the_previous_period_reads():
+    # a turnover at 0:10 (clock 10) gives Duke the ball dead; Duke scores at 0:00 (clock 0) --
+    # the same shape of interval that used to bridge to the previous period's clock-0.0 reads
+    events = [
+        ev("20:00", None, "Jumpball", "Start game"),
+        ev("19:59", M, "Jumpball", "Jump Ball won by Michigan"),
+        ev("0:10", M, "Lost Ball Turnover", "Someone bad pass\nturnover"),
+        ev("0:00", D, "JumpShot", "Someone makes 10-foot jumper"),
+    ]
+    assert [summary(i) for i in H.intervals(events) if i.team == D] == [
+        (D, 10, 0, "dead", "shot", False),
+    ]
+    # the countdown from clock 1200 at t=100 now runs all the way to clock 0 at t=1300
+    rs = reads([(96, 0.0), (97, 0.0), (98, 0.0), (99, 0.0)]
+               + [(100 + k, 1200 - k) for k in range(1201)])
+    recs = H.build_records("test", D, events, rs, [], span=(100.0, 1305.0))
+    assert len(recs) == 1
+    r = recs[0]
+    assert r.located
+    assert r.t_start >= 100.0
+    assert abs(r.t_end - 1300.5) < 0.01
 
 
 def test_default_stillness_threshold_is_one_and_a_half_feet():

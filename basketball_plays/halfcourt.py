@@ -267,8 +267,10 @@ def clock_to_video(reads, clock: float, mode: str,
 
     `mode="first"` is the moment the clock reached the value (a running-clock event such as a
     rebound or shot); `mode="last"` is the moment just before it moved on (the inbound after a
-    stoppage). Falls back to linear interpolation between the nearest reads on either side, or
-    None when that pair is more than `max_gap_s` seconds of video apart.
+    stoppage). Falls back to linear interpolation between the latest read still above the target
+    clock and the earliest read below it that comes after that in time (so a stray earlier read
+    below the target -- e.g. the previous period's final clock -- cannot be picked), or None when
+    that pair is more than `max_gap_s` seconds of video apart.
 
     A game clock repeats every period, so `t_lo`/`t_hi` restrict the reads considered to the
     video span of the period being mapped; without them the second half's reads would compete
@@ -285,12 +287,14 @@ def clock_to_video(reads, clock: float, mode: str,
     if exact:
         return float(exact[0] if mode == "first" else exact[-1])
     above = [(t, c) for t, c in known if c > clock]
-    below = [(t, c) for t, c in known if c < clock]
-    if not above or not below:
+    if not above:
         return None
     t_hi, c_hi = max(above, key=lambda p: p[0])  # latest read still above the target clock
-    t_lo, c_lo = min(below, key=lambda p: p[0])  # earliest read already below it
-    if t_lo <= t_hi or t_lo - t_hi > max_gap_s:
+    below = [(t, c) for t, c in known if c < clock and t > t_hi]
+    if not below:
+        return None
+    t_lo, c_lo = min(below, key=lambda p: p[0])  # earliest read below it, after t_hi
+    if t_lo - t_hi > max_gap_s:
         return None
     frac = (c_hi - clock) / (c_hi - c_lo)
     return round(float(t_hi + frac * (t_lo - t_hi)), 2)
@@ -622,7 +626,9 @@ def build_records(game_id: str, team: str, events: list[Event], reads,
     `possessions` outside a whole game are filtered to those overlapping it first, since teams
     switch baskets at half time and a possession from the other half must not vote on the
     attack direction, contribute tracks, or widen the scoreboard-read window `clock_to_video`
-    draws from. Every record produced carries `period`.
+    draws from. `span` bounds the scoreboard reads exactly (no padding): spans from
+    `periods.period_spans` are contiguous and each starts at the reset read, so padding would
+    only ever admit the neighbouring period's reads. Every record produced carries `period`.
     """
     out: list[HalfcourtRecord] = []
     if span is not None:
@@ -630,7 +636,7 @@ def build_records(game_id: str, team: str, events: list[Event], reads,
         possessions = [p for p in possessions if p.end_time >= lo and p.start_time <= hi]
     attacking_basket = attack_direction(possessions, team) if possessions else "left"
     if span is not None:
-        t_lo, t_hi = span[0] - 5.0, span[1] + 5.0
+        t_lo, t_hi = span
     else:
         t_lo = min((p.start_time for p in possessions), default=None)
         t_hi = max((p.end_time for p in possessions), default=None)

@@ -9,9 +9,11 @@ Fits `plays.fit_clusters` on the `split == "train"` rows that have a setup frame
 False`) -- rows with one or two detected players and no setup frame carry almost no formation
 signal and would otherwise pull the centroids toward detection noise. Every other row (no-setup
 train rows, and all test/ncaa rows) is assigned to the nearest centroid afterwards via
-`plays.assign` and is flagged `"assigned_only": true` in the output. Writes `clusters.json` and
-renders a 3x3 grid of setup tiles (the nine nearest *fit* members) per cluster to
-`--montages/cluster_<c>.png`.
+`plays.assign` and is flagged `"assigned_only": true` in the output. `plays.fit_clusters` narrows
+`--k-min`/`--k-max` to the window the corpus can support and picks k by a one-standard-error rule
+on the silhouette, so the sweep printed here is usually narrower than the flags ask for. Writes
+`clusters.json` and renders a 3x3 grid of setup tiles (the nine nearest *fit* members) per
+cluster to `--montages/cluster_<c>.png`.
 """
 
 from __future__ import annotations
@@ -83,8 +85,10 @@ def main() -> None:
         labels[assign_idx] = P.assign(model, X[assign_idx])
     clusters = P.summarize(model, rows, labels, Z.ZONE_NAMES, fit_mask=fit_mask)
 
-    print("k sweep:", model.sweep)
-    print(f"chosen k={model.k} silhouette={model.silhouette:.3f} "
+    print("k sweep (mean silhouette +/- se):",
+          {k: f"{v['mean']:.3f}+/-{v['se']:.3f}" for k, v in model.sweep.items()})
+    sil = "n/a" if model.silhouette is None else f"{model.silhouette:.3f}"
+    print(f"chosen k={model.k} (best raw k={model.k_best_raw}, 1-SE rule) silhouette={sil} "
           f"stability_ari={model.stability_ari:.3f} small_corpus={model.small_corpus} "
           f"n_fit={len(fit_idx)} n_assigned_only={len(assign_idx)}")
     for c in clusters:
@@ -92,8 +96,9 @@ def main() -> None:
               f"by_bucket={c['n_by_bucket']} by_split={c['n_by_split']}")
 
     out = {
-        "k": model.k, "silhouette": model.silhouette, "stability_ari": model.stability_ari,
-        "small_corpus": model.small_corpus, "sweep": {str(k): v for k, v in model.sweep.items()},
+        "k": model.k, "k_best_raw": model.k_best_raw, "silhouette": model.silhouette,
+        "stability_ari": model.stability_ari, "small_corpus": model.small_corpus,
+        "sweep": {str(k): v for k, v in model.sweep.items()},
         "n_fit": len(fit_idx), "n_assigned_only": len(assign_idx),
         "clusters": clusters,
         "labels": {f"{r.game_id}:{r.period}:{r.index}": {

@@ -7,6 +7,7 @@ import os
 import re
 import subprocess
 import tempfile
+from collections import Counter
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -55,13 +56,44 @@ def tesseract(img: np.ndarray, psm: int, whitelist: str = "0123456789:.") -> str
         os.unlink(path)
 
 
+OCR_MODES = (7, 13, 8, 10)  # line, raw line (works for a lone digit), word, single character
+
+
+def _run_modes(img: np.ndarray, modes: tuple[int, ...] = OCR_MODES) -> list[str]:
+    """OCR `img` once per page-segmentation mode, in `modes` order. Separate from `ocr_digits`
+    so that tests can stub the tesseract calls out."""
+    return [tesseract(img, psm).replace(" ", "") for psm in modes]
+
+
+def _is_plausible(text: str) -> bool:
+    """Whether an OCR string looks like something a scoreboard actually shows: a clock (m:ss, or
+    tenths under a minute), or a one- or two-digit score."""
+    if re.fullmatch(r"\d{1,2}:\d{2}", text):
+        return True
+    if re.fullmatch(r"\d{1,2}\.\d", text):
+        return float(text) < 60
+    return bool(re.fullmatch(r"\d{1,2}", text))
+
+
 def ocr_digits(crop: np.ndarray) -> str:
-    img = preprocess(crop)
-    for psm in (7, 13, 8, 10):  # line, raw line (works for a lone digit), word, single character
-        text = tesseract(img, psm).replace(" ", "")
-        if text:
-            return text
-    return ""
+    """Read the digits in `crop`, running every mode and keeping the best answer.
+
+    This used to return the first non-empty result, which let one bad mode decide the read:
+    psm 7 answers "1" for a clear "51" often enough to matter, and being non-empty that answer
+    was taken even though later modes disagreed. Instead all modes are run and the result is
+    chosen — first preferring readings that look like a scoreboard value, then the reading the
+    most modes agree on, then the longest, since the failure mode is a dropped digit and the
+    longer reading is the more complete one. Ties fall back to the order in OCR_MODES.
+    """
+    texts = _run_modes(preprocess(crop))
+    ranked = [(text, i) for i, text in enumerate(texts) if text]
+    if not ranked:
+        return ""
+    # When nothing looks like a scoreboard value, keep every non-empty reading rather than
+    # returning "": parse_score and clock_candidates can still salvage e.g. a dropped colon.
+    pool = [(text, i) for text, i in ranked if _is_plausible(text)] or ranked
+    counts = Counter(text for text, _ in pool)
+    return min(pool, key=lambda ti: (-counts[ti[0]], -len(ti[0]), ti[1]))[0]
 
 
 def parse_score(text: str) -> int | None:

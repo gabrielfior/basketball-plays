@@ -120,3 +120,35 @@ def test_clean_timeline_disambiguates_dropped_colon_by_context():
     rs[1].clock_text = "441"
     out = sb.clean_timeline(rs)
     assert [r.clock for r in out] == [45.0, 44.1, 43.2]
+
+
+def stub_modes(monkeypatch, texts):
+    """Make ocr_digits see `texts` as the per-mode tesseract output, in OCR_MODES order."""
+    monkeypatch.setattr(sb, "preprocess", lambda crop: crop)
+    monkeypatch.setattr(sb, "_run_modes", lambda img, modes=sb.OCR_MODES: list(texts))
+
+
+def test_ocr_digits_prefers_the_reading_the_most_modes_agree_on(monkeypatch):
+    """The real failure: psm 7 drops a digit and its "5" used to win by being first."""
+    stub_modes(monkeypatch, ["5", "51", "51", ""])
+    assert sb.ocr_digits(None) == "51"
+
+
+def test_ocr_digits_prefers_a_scoreboard_shaped_reading_then_the_longer_one(monkeypatch):
+    """"9:0" and "905" are not shapes a scoreboard shows, so they lose to "9:05" and "9";
+    those two tie on count, and the longer one wins because digits get dropped, not added."""
+    stub_modes(monkeypatch, ["9:0", "9:05", "905", "9"])
+    assert sb.ocr_digits(None) == "9:05"
+
+
+def test_ocr_digits_returns_empty_when_no_mode_reads_anything(monkeypatch):
+    stub_modes(monkeypatch, ["", "", "", ""])
+    assert sb.ocr_digits(None) == ""
+
+
+def test_ocr_digits_keeps_an_implausible_reading_when_nothing_looks_like_a_score(monkeypatch):
+    """A dropped colon leaves "1204", which no shape rule accepts; clock_candidates still
+    recovers 12:04 from it, so it must not be thrown away in favour of ""."""
+    stub_modes(monkeypatch, ["", "1204", "1204", ""])
+    assert sb.ocr_digits(None) == "1204"
+    assert sb.parse_clock(sb.ocr_digits(None)) == (12 * 60 + 4, "12:04")

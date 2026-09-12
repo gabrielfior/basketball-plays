@@ -30,9 +30,10 @@ def test_unknown_layout_raises():
     ("cw_wake.jpg", "cw", 492, 18, 17),             # 8:12, Wake Forest 18 at Duke 17
     ("cw_wake_1500.jpg", "cw", 240, 25, 32),        # 4:00, Wake Forest 25 at Duke 32
     # cw_wake_2500.jpg (12:04, Wake 51, Duke 61) and cw_wake_3500.jpg (5:41, Wake 55, Duke 77)
-    # are left out: the regions do frame both digits there (the crops read "51" and "77" by eye),
-    # but tesseract returns "1" and "7". That is an ocr_digits limitation, not a layout one, so
-    # those two frames stay as fixtures for whoever fixes the OCR.
+    # are left out: the regions do frame both digits (the crops read "51" and "77" by eye), but
+    # tesseract answers "1" and "7" in every psm at every scale, so neither the layout nor
+    # ocr_digits' choice of mode can recover them. What does work is splitting the crop into
+    # connected components and scaling each glyph to ~48px before OCR; see the task 4c report.
     ("cbssn_army.jpg", "cbssn", 424, 29, 20),       # 7:04, Duke 29 at Army 20
 ])
 def test_layouts_read_the_fixture_frames(name, layout, clock, away, home):

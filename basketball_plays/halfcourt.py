@@ -423,14 +423,19 @@ def merged_count(tracks: list[Track], t: float) -> int:
     return len(positions_at(tracks, t, cap=None))
 
 
-def tracks_from_record(rec: "HalfcourtRecord") -> list[Track]:
-    """Rebuild canonical, clipped tracks from a record's stored players."""
+def tracks_from_players(players: list[dict]) -> list[Track]:
+    """Rebuild canonical, clipped tracks from a list of stored player dicts."""
     return [
         Track(p["track_id"], p.get("name"), p.get("jersey"),
               {round(row[0], 3): (row[1], row[2]) for row in p["trajectory"]}, set(),
               detected={round(x, 3) for x in p.get("detected", [])}, length=p.get("length", 0))
-        for p in rec.players
+        for p in players
     ]
+
+
+def tracks_from_record(rec: "HalfcourtRecord") -> list[Track]:
+    """Rebuild canonical, clipped tracks from a record's stored players."""
+    return tracks_from_players(rec.players)
 
 
 def find_t0(tracks: list[Track], handler: dict[float, tuple[float, float]], t_start: float,

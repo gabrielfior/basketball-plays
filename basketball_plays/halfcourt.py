@@ -304,14 +304,20 @@ class Track:
     length: int = 0  # frames in the source track (longer tracks are more trustworthy)
 
 
-def attack_direction(possessions: list[Possession], team: str) -> str:
+def attack_direction(possessions: list[Possession], team: str,
+                     span: tuple[float, float] | None = None) -> str:
     """The basket `team` attacks in this period: the majority `attacking_basket` over the vision
     possessions where `team` is the offence.
 
     `Possession.attacking_basket` describes the offence of that possession, so it is only a
-    statement about `team` when `team` is the one attacking. Raises `ValueError` when no
-    possession has `offense_team == team`.
+    statement about `team` when `team` is the one attacking. Teams switch baskets at half time,
+    so when `span` (a video-time window) is given, only possessions overlapping it vote: a whole
+    game's possessions would otherwise let the first half's direction outvote the second half's.
+    Raises `ValueError` when no possession has `offense_team == team`.
     """
+    if span is not None:
+        lo, hi = span
+        possessions = [p for p in possessions if p.end_time >= lo and p.start_time <= hi]
     votes = Counter(p.attacking_basket for p in possessions if p.offense_team == team)
     if not votes:
         raise ValueError(f"no vision possession has offense_team == {team!r}")
@@ -519,6 +525,7 @@ class HalfcourtRecord:
 
     game_id: str
     index: int
+    period: int = field(default=1, kw_only=True)
     team: str
     start_type: str
     full_court: bool = field(default=False, kw_only=True)
@@ -553,12 +560,12 @@ class HalfcourtRecord:
 
 def _bare_record(game_id: str, index: int, iv: Interval, outcome: str | None, points: int,
                   t_start: float | None = None, t_end: float | None = None,
-                  located: bool = False) -> HalfcourtRecord:
+                  located: bool = False, period: int = 1) -> HalfcourtRecord:
     """A `HalfcourtRecord` with no track data: either the clocks never located (`located=False`,
     the default) or they located but no track reached the frontcourt (`located=True`, with
     `t_start`/`t_end` filled in)."""
     return HalfcourtRecord(
-        game_id=game_id, index=index, team=iv.team, start_type=iv.start_type,
+        game_id=game_id, index=index, period=period, team=iv.team, start_type=iv.start_type,
         full_court=iv.full_court, terminal=iv.terminal,
         free_throws=iv.free_throws, clock_start=iv.start_clock, clock_end=iv.end_clock,
         t_start=t_start, t_end=t_end, t0=None, setup=None, no_setup=True, transition=False,
@@ -568,8 +575,9 @@ def _bare_record(game_id: str, index: int, iv: Interval, outcome: str | None, po
 
 
 def build_records(game_id: str, team: str, events: list[Event], reads,
-                   possessions: list[Possession],
-                   period_length: float = 1200.0) -> list[HalfcourtRecord]:
+                   possessions: list[Possession], period_length: float = 1200.0,
+                   period: int = 1,
+                   span: tuple[float, float] | None = None) -> list[HalfcourtRecord]:
     """One `HalfcourtRecord` per `team` interval in `events`, with clocks mapped to video time via
     `reads` and player/ball-handler data gathered from `possessions` where a track reached the
     frontcourt.
@@ -578,20 +586,32 @@ def build_records(game_id: str, team: str, events: list[Event], reads,
     scoreboard reads a clock may map to, and the majority attacking basket over `team`'s own
     possessions fixes the mirroring for every `team` track, including tracks read out of the
     opponent's possessions.
+
+    `span` is the period's video-time window (see `periods.period_spans`). When given,
+    `possessions` outside a whole game are filtered to those overlapping it first, since teams
+    switch baskets at half time and a possession from the other half must not vote on the
+    attack direction, contribute tracks, or widen the scoreboard-read window `clock_to_video`
+    draws from. Every record produced carries `period`.
     """
     out: list[HalfcourtRecord] = []
+    if span is not None:
+        lo, hi = span
+        possessions = [p for p in possessions if p.end_time >= lo and p.start_time <= hi]
     attacking_basket = attack_direction(possessions, team) if possessions else "left"
-    t_lo = min((p.start_time for p in possessions), default=None)
-    t_hi = max((p.end_time for p in possessions), default=None)
-    if t_lo is not None and t_hi is not None:
-        t_lo, t_hi = t_lo - 5.0, t_hi + 5.0
+    if span is not None:
+        t_lo, t_hi = span[0] - 5.0, span[1] + 5.0
+    else:
+        t_lo = min((p.start_time for p in possessions), default=None)
+        t_hi = max((p.end_time for p in possessions), default=None)
+        if t_lo is not None and t_hi is not None:
+            t_lo, t_hi = t_lo - 5.0, t_hi + 5.0
     for index, iv in enumerate(i for i in intervals(events, period_length) if i.team == team):
         outcome, points = derive_outcome(iv.events, team)
         start_mode = "first" if iv.start_type == LIVE else "last"
         t_start = clock_to_video(reads, iv.start_clock, start_mode, t_lo=t_lo, t_hi=t_hi)
         t_end = clock_to_video(reads, iv.end_clock, "first", t_lo=t_lo, t_hi=t_hi)
         if t_start is None or t_end is None or t_end <= t_start:
-            out.append(_bare_record(game_id, index, iv, outcome, points))
+            out.append(_bare_record(game_id, index, iv, outcome, points, period=period))
             continue
         t_end = round(t_end + 0.5, 2)  # the read at the terminal clock precedes the event by 1 s
         tracks = gather_tracks(possessions, team, t_start - 3.0, t_end, attacking_basket)
@@ -599,7 +619,7 @@ def build_records(game_id: str, team: str, events: list[Event], reads,
         t0 = find_t0(tracks, handler, t_start - 1.0, t_end)
         if t0 is None:
             out.append(_bare_record(game_id, index, iv, outcome, points,
-                                     t_start=t_start, t_end=t_end, located=True))
+                                     t_start=t_start, t_end=t_end, located=True, period=period))
             continue
         if iv.start_type == LIVE:
             # find_t0 searches from a second before the interval opens; a live possession cannot
@@ -611,7 +631,7 @@ def build_records(game_id: str, team: str, events: list[Event], reads,
         visible, _ = still_players(tracks, setup)
         raw_count = merged_count(tracks, setup)
         out.append(HalfcourtRecord(
-            game_id=game_id, index=index, team=team, start_type=iv.start_type,
+            game_id=game_id, index=index, period=period, team=team, start_type=iv.start_type,
             full_court=iv.full_court, terminal=iv.terminal,
             free_throws=iv.free_throws, clock_start=iv.start_clock, clock_end=iv.end_clock,
             t_start=t_start, t_end=t_end, t0=t0, setup=setup, no_setup=no_setup,

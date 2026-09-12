@@ -506,6 +506,29 @@ def test_positions_at_keeps_the_better_ranked_member_of_a_duplicate_pair():
     assert H.positions_at([ghost, good], key) == [(10.0, 25.0)]
 
 
+def test_build_records_second_half_uses_the_second_half_attack_direction():
+    # first half: Duke attacks right (raw x 70 -> canonical 24); second half: Duke attacks left
+    events = OPENING[:8]
+    rs = reads([(58, 1174), (59, 1173), (60, 1172), (61, 1172), (62, 1172), (63, 1172)]
+               + [(63 + k, 1171 - (k - 1)) for k in range(1, 30)])
+    first = make_possession(
+        [PlayerTrack(10 + i, "Duke", None, None, traj(60.0, 100, 70.0, 8.0 + 8 * i), [],
+                     holding=[66.5] if i == 0 else []) for i in range(5)],
+        basket="right", t0=60.0, t1=70.0)
+    second = make_possession(
+        [PlayerTrack(20 + i, "Duke", None, None, traj(2060.0, 100, 24.0, 8.0 + 8 * i), [],
+                     holding=[2066.5] if i == 0 else []) for i in range(5)],
+        basket="left", pid=1, t0=2060.0, t1=2070.0)
+    rs2 = reads([(2058, 1174), (2059, 1173), (2060, 1172), (2061, 1172), (2062, 1172),
+                 (2063, 1172)] + [(2063 + k, 1171 - (k - 1)) for k in range(1, 30)])
+    recs = H.build_records("test", "Duke", events, rs + rs2, [first, second],
+                           period=2, span=(2000.0, 2200.0))
+    assert len(recs) == 1 and recs[0].period == 2 and recs[0].located
+    assert 2060.0 <= recs[0].t_start <= 2064.0
+    # second-half Duke tracks at raw x 24 attack left, so they are already canonical
+    assert all(row[1] < 47 for p in recs[0].players for row in p["trajectory"])
+
+
 def test_tracks_from_record_roundtrips_detected_and_length():
     rec = H.HalfcourtRecord(
         game_id="g", index=0, team="Duke", start_type="dead", terminal="shot", free_throws=False,

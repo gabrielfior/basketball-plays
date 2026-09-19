@@ -8,4 +8,6 @@ __pycache__/
 data/*
 !data/.gitkeep
 !data/trajectories.jsonl
-docs/superpowers/plans/
+docs/
+.DS_Store
+.superpowers/

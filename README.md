@@ -61,7 +61,7 @@ mkdir -p data && uvx yt-dlp -f "bestvideo[height<=720][ext=mp4][vcodec^=avc1]+be
    uv run python scripts/summarize_possessions.py data/trajectories.jsonl --out data/possessions.csv
    ```
 
-6. Play-recognition spike (Phase 0 of `docs/superpowers/specs/2026-09-11-duke-play-recognition-design.md`):
+6. Play-recognition spike (Phase 0 of the set-recognition design):
    Duke half-court possessions from ESPN intervals, setup frames and a montage of setup snapshots.
 
    ```bash
@@ -339,7 +339,6 @@ After `annotate_outcomes.py` each possession also carries:
   coordinates, invalid-view filtering (replays, close-ups, ads), possession segmentation from
   which half the players occupy, offense team from `player-in-possession` detections, jersey
   voting, teleport removal and smoothing.
-- Design notes: `docs/superpowers/specs/2026-09-10-basketball-plays-design.md`.
 
 ## Results on the first half (video 0:00 to 35:35)
 
@@ -372,7 +371,7 @@ Known limitations, in order of impact:
   of the frames.
 - Possession outcomes depend on the OCR'd clock: with a 1 s clock resolution, several dead-ball
   segments at the same clock (a free-throw sequence) cannot be told apart, so the free throws land
-  on one of them. A vision-only made/miss detector is described in `docs/backlog/vision-outcomes.md`.
+  on one of them. A vision-only made/miss detector is a known follow-up.
 - Jersey OCR at 720p misreads similar digits (2 vs 21, 3 vs 23); a number needs two agreeing
   reads on the team's roster, and concurrent duplicates on one team keep only the stronger vote.
 
